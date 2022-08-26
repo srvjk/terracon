@@ -1,0 +1,8 @@
+config BR2_PACKAGE_TERRACON
+	bool "terracon"
+	depends on BR2_PACKAGE_PYTHON_PYQT5
+	help
+	  Terracon is a control panel for automated aquaterrarium.
+
+	  https://github.com/srvjk/terracon
+

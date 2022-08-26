@@ -1,19 +1,19 @@
 #!/usr/bin/python3
 
 import sys
-from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5 import QtWidgets
 
 
 def main():
-	app = QApplication(sys.argv)
+	app = QtWidgets.QApplication(sys.argv)
 
-	w = QWidget()
-	w.resize(250, 150)
-	w.move(300, 300)
-	w.setWindowTitle('TerraCon')
-	w.show()
+	mainwnd = QtWidgets.QWidget()
+	#w.resize(250, 150)
+	#w.move(300, 300)
+	mainwnd.setWindowTitle('TerraCon')
+	mainwnd.show()
 
-	sys.exit(app.exec_())
+	sys.exit(app.exec())
 
 
 if __name__ == '__main__':
