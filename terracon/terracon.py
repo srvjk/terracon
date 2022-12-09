@@ -66,7 +66,7 @@ class TerraconWindow(QtWidgets.QWidget):
         light_group.setLayout(light_layout)
 
         self.light_label = QtWidgets.QFrame()
-        sz = self.width() * 0.2
+        sz = int(self.width() * 0.2)
         self.light_label.setFixedSize(sz, sz)
         light_layout.addWidget(self.light_label)
 
