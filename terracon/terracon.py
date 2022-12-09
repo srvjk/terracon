@@ -3,6 +3,7 @@
 import sys
 from PyQt5 import QtCore, QtWidgets
 from enum import Enum
+import platform
 
 
 class ScreenType(Enum):
@@ -116,6 +117,9 @@ class TerraconWindow(QtWidgets.QWidget):
 
 
 def main():
+    print("Terracon on {}".format(platform.platform()))
+    print("Python ({}) {}".format(platform.python_implementation(), platform.python_version()))
+
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
