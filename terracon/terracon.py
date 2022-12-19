@@ -72,23 +72,17 @@ class TerraconWindow(QtWidgets.QWidget):
         light_layout.addWidget(self.light_label)
 
         self.light_full_button = QtWidgets.QPushButton('100%')
-        self.light_full_button.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
-            QtWidgets.QSizePolicy.Policy.MinimumExpanding
-        )
+        # почему-то нет константы QtWidgets.QSizePolicy.Policy.MinimumExpanding (и других) на Raspberry,
+        # поэтому код 3 вместо нее:
+        self.light_full_button.setSizePolicy(QtWidgets.QSizePolicy.Policy(3), QtWidgets.QSizePolicy.Policy(3))
         light_layout.addWidget(self.light_full_button)
+
         self.light_off_button = QtWidgets.QPushButton('Выкл')
+        self.light_off_button.setSizePolicy(QtWidgets.QSizePolicy.Policy(3), QtWidgets.QSizePolicy.Policy(3))
         light_layout.addWidget(self.light_off_button)
-        self.light_off_button.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
-            QtWidgets.QSizePolicy.Policy.MinimumExpanding
-        )
 
         self.exitButton = QtWidgets.QPushButton('Выход')
-        self.exitButton.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
-            QtWidgets.QSizePolicy.Policy.MinimumExpanding
-        )
+        self.exitButton.setSizePolicy(QtWidgets.QSizePolicy.Policy(3), QtWidgets.QSizePolicy.Policy(3))
         self.mainLayout.addWidget(self.exitButton)
 
         self.light_full_button.clicked.connect(self.light_full)
