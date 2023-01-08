@@ -4,6 +4,12 @@ import sys
 from PyQt5 import QtCore, QtWidgets
 from enum import Enum
 import platform
+import time
+
+try:
+    import RPi.GPIO as GPIO
+except RuntimeError:
+    print("Error importing RPi.GPIO!")
 
 
 class ScreenType(Enum):
@@ -60,7 +66,7 @@ class TerraconWindow(QtWidgets.QWidget):
 
         self.light_percent = 0
 
-        light_group = QtWidgets.QGroupBox("Свет")
+        light_group = QtWidgets.QGroupBox("Свет!")
         self.mainLayout.addWidget(light_group)
 
         light_layout = QtWidgets.QHBoxLayout()
@@ -85,7 +91,8 @@ class TerraconWindow(QtWidgets.QWidget):
         self.exitButton.setSizePolicy(QtWidgets.QSizePolicy.Policy(3), QtWidgets.QSizePolicy.Policy(3))
         self.mainLayout.addWidget(self.exitButton)
 
-        self.light_full_button.clicked.connect(self.light_full)
+        #self.light_full_button.clicked.connect(self.light_full)
+        self.light_full_button.clicked.connect(self.test_gpio)
         self.light_off_button.clicked.connect(self.light_off)
         self.exitButton.clicked.connect(QtWidgets.QApplication.quit)
 
@@ -94,6 +101,15 @@ class TerraconWindow(QtWidgets.QWidget):
                 self.setFixedSize(1024, 600)
 
         set_style_sheet(self, dark_style_sheet)
+
+        GPIO.setmode(GPIO.BOARD)
+        GPIO.setwarnings(False)
+
+        self.light_gpio_channel = 11
+        GPIO.setup(self.light_gpio_channel, GPIO.OUT)
+
+    def __del__(self):
+        GPIO.cleanup()
 
     def light_full(self):
         self.light_percent = 100
@@ -108,6 +124,16 @@ class TerraconWindow(QtWidgets.QWidget):
         val = minval + (255 - minval) * (self.light_percent / 100.0)
         style_str = "QWidget {{ color: lightgray; background-color: rgb({}, {}, {}) }}".format(val, val, val)
         self.light_label.setStyleSheet(style_str)
+
+    def test_gpio(self):
+
+        for i in range(10):
+            GPIO.output(channel, GPIO.HIGH)
+            time.sleep(1)
+            GPIO.output(channel, GPIO.LOW)
+            time.sleep(1)
+
+        GPIO.cleanup()
 
 
 def main():
