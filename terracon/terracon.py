@@ -1,167 +1,197 @@
 #!/usr/bin/python3
 
-import sys
-from PyQt5 import QtCore, QtWidgets
-from enum import Enum
-import platform
 import time
+import asyncio
+import websockets
+import xml.etree.ElementTree as etree
+import xml.dom.minidom as md
+import terracon_program_engine as progengine
+
+gpio_present = True
 
 try:
     import RPi.GPIO as GPIO
-except RuntimeError:
+except ModuleNotFoundError:
+    gpio_present = False
     print("Error importing RPi.GPIO!")
 
 
-class ScreenType(Enum):
-    UNDEFINED = 0
-    LCD_1024_600 = 1
+class WebServer:
+    def __init__(self, worker):
+        self.client = None
+        self.worker = worker
 
+    async def register(self, ws: websockets.WebSocketServerProtocol) -> None:
+        self.client = ws
+        print("Client connected: {}".format(ws.remote_address))
 
-APP_NAME = 'TerraCon'
-APP_VERSION = '1.0.0'
+    async def unregister(self, ws: websockets.WebSocketServerProtocol) -> None:
+        self.client = None
+        print("Client disconnected: {}".format(ws.remote_address))
 
+    async def process_command(self, ws: websockets.WebSocketServerProtocol):
+        async for message in ws:
+            self.worker.on_new_command(message)
 
-dark_style_sheet = """
-QWidget { color: white; background-color: rgb(53, 53, 53) }
-QLabel { font-size: 24px; font-family: Arial; color: lightgray; background-color: rgb(53, 53, 53) }
-QPushButton { font-size: 24px; font-family: Arial; color: lightgray; background-color: rgb(53, 53, 53) }
-QFrame {
-    border: 2px solid rgb(178, 178, 178);
-    border-radius: 10px;
-    margin-top: 6px;
-    padding-top: 8px;
-}
-QGroupBox {
-    border: 2px solid rgb(80, 80, 80);
-    border-radius: 5px;
-    font-size: 24px; font-family: Arial;
-    margin: 10px 0px 0px 3px;
-}
-QGroupBox::title {
-    subcontrol-origin:  margin;
-    subcontrol-position: top;
-    padding: -8px 0px 0px 3px;
-}
-"""
+    async def ws_handler(self, ws: websockets.WebSocketServerProtocol, uri: str) -> None:
+        await self.register(ws)
+        try:
+            await self.process_command(ws)
+        finally:
+            await self.unregister(ws)
 
+    async def send_to_client(self, message: str) -> None:
+        await self.client.send(message)
 
-def set_style_sheet(item, style_sheet):
-    if isinstance(item, QtWidgets.QWidget):
-        item.setStyleSheet(style_sheet)
-    for child in item.children():
-        if isinstance(child, QtWidgets.QWidget):
-            set_style_sheet(child, style_sheet)
-        elif isinstance(child, QtWidgets.QLayout):
-            set_style_sheet(child, style_sheet)
+class Worker:
+    def __init__(self, use_gpio):
+        self.use_gpio = use_gpio
+        self.should_stop = False
+        self.web_server = WebServer(self)
+        self.main_light_intensity = 0
+        self.water_on = False
+        self.program_engine = progengine.TerraconProgramEngine()
+        self.enable_program = True
 
+    def on_new_command(self, text):
+        self.parse_command(text)
 
-class TerraconWindow(QtWidgets.QWidget):
-    def __init__(self, windowed=False):
-        super().__init__()
-        self.screen_type = ScreenType.LCD_1024_600  # задаем жестко, т.к. пишем скрипт под конкретный дисплей
+    async def run_server(self):
+        print('running webserver')
+        async with websockets.serve(self.web_server.ws_handler, "", 8001):
+            await asyncio.Future()
 
-        self.setWindowTitle(APP_NAME)
-        self.mainLayout = QtWidgets.QVBoxLayout()
-        self.setLayout(self.mainLayout)
+    async def run_program(self):
+        print('running program engine')
 
-        self.light_percent = 0
+        while not self.should_stop:
+            if not self.enable_program:
+                time.sleep(0.1)
+                continue
+            self.program_engine.step()
 
-        light_group = QtWidgets.QGroupBox("Свет!")
-        self.mainLayout.addWidget(light_group)
+        print ('program engine finished')
 
-        light_layout = QtWidgets.QHBoxLayout()
-        light_group.setLayout(light_layout)
+    async def run_gpio(self):
+        print('running gpio')
 
-        self.light_label = QtWidgets.QFrame()
-        sz = int(self.width() * 0.2)
-        self.light_label.setFixedSize(sz, sz)
-        light_layout.addWidget(self.light_label)
+        GPIO.setmode(GPIO.BCM)    # устанавливаем режим нумерации по назв. каналов
+        GPIO.setup(12, GPIO.OUT)  # назначаем пин GPIO12 выходным (управление светом)
+        GPIO.setup(16, GPIO.OUT)  # назначаем пин GPIO16 выходным (управление водяной помпой)
 
-        self.light_full_button = QtWidgets.QPushButton('100%')
-        # почему-то нет константы QtWidgets.QSizePolicy.Policy.MinimumExpanding (и других) на Raspberry,
-        # поэтому код 3 вместо нее:
-        self.light_full_button.setSizePolicy(QtWidgets.QSizePolicy.Policy(3), QtWidgets.QSizePolicy.Policy(3))
-        light_layout.addWidget(self.light_full_button)
+        pwm = GPIO.PWM(12, 20000)  # устанавливаем частоту ШИМ 20 кГц
+        GPIO.output(16, GPIO.HIGH)  # помпа выключена
 
-        self.light_off_button = QtWidgets.QPushButton('Выкл')
-        self.light_off_button.setSizePolicy(QtWidgets.QSizePolicy.Policy(3), QtWidgets.QSizePolicy.Policy(3))
-        light_layout.addWidget(self.light_off_button)
+        pwm.start(0)
 
-        self.exitButton = QtWidgets.QPushButton('Выход')
-        self.exitButton.setSizePolicy(QtWidgets.QSizePolicy.Policy(3), QtWidgets.QSizePolicy.Policy(3))
-        self.mainLayout.addWidget(self.exitButton)
+        while not self.should_stop:
+            # яркость основного освещения
+            pwm.ChangeDutyCycle(self.main_light_intensity)
 
-        #self.light_full_button.clicked.connect(self.light_full)
-        self.light_full_button.clicked.connect(self.test_gpio)
-        self.light_off_button.clicked.connect(self.light_off)
-        self.exitButton.clicked.connect(QtWidgets.QApplication.quit)
+            # водяная помпа верхнего полива
+            if self.water_on:
+                GPIO.output(16, GPIO.LOW)  # включить помпу
+            else:
+                GPIO.output(16, GPIO.HIGH)  # выключить помпу
 
-        if windowed:
-            if self.screen_type == ScreenType.LCD_1024_600:
-                self.setFixedSize(1024, 600)
+            await asyncio.sleep(0.5)
 
-        set_style_sheet(self, dark_style_sheet)
-
-        GPIO.setmode(GPIO.BOARD)
-        GPIO.setwarnings(False)
-
-        self.light_gpio_channel = 11
-        GPIO.setup(self.light_gpio_channel, GPIO.OUT)
-
-    def __del__(self):
-        GPIO.cleanup()
-
-    def light_full(self):
-        self.light_percent = 100
-        self.update_state()
-
-    def light_off(self):
-        self.light_percent = 0
-        self.update_state()
-
-    def update_state(self):
-        minval = 53
-        val = minval + (255 - minval) * (self.light_percent / 100.0)
-        style_str = "QWidget {{ color: lightgray; background-color: rgb({}, {}, {}) }}".format(val, val, val)
-        self.light_label.setStyleSheet(style_str)
-
-    def test_gpio(self):
-
-        for i in range(10):
-            GPIO.output(channel, GPIO.HIGH)
-            time.sleep(1)
-            GPIO.output(channel, GPIO.LOW)
-            time.sleep(1)
+        pwm.stop()
+        GPIO.output(16, GPIO.HIGH)  # выходя, выключаем помпу
 
         GPIO.cleanup()
 
+        print('gpio finished')
+
+    def run(self):
+        print('-> main')
+        if not self.program_engine.load_program("program_test1.py", "./programs"):
+            print("Error: could not load program")
+
+        ioloop = asyncio.get_event_loop()
+        tasks = list()
+        tasks.append(ioloop.create_task(self.run_server()))
+        tasks.append(ioloop.create_task(self.run_program()))
+        if self.use_gpio:
+            tasks.append(ioloop.create_task(self.run_gpio()))
+        wait_tasks = asyncio.wait(tasks)
+        ioloop.run_until_complete(wait_tasks)
+        ioloop.close()
+        print('<- main')
+
+    def parse_command(self, text: str):
+        root = etree.fromstring(text)
+
+        print(root.tag, root.attrib)
+
+        if root.tag != "command":
+            return
+
+        opcode = root.attrib["opcode"]
+        if not opcode:
+            return
+
+        match opcode:
+            case "setLightIntensity":
+                self.on_command_set_light_intensity(root)
+            case "waterOn":
+                self.on_command_water_on(root)
+            case "waterOff":
+                self.on_command_water_off(root)
+            case "updateFromServer":
+                self.on_command_update_from_server(root)
+            case "serverShutdown":
+                self.on_command_server_shutdown(root)
+            case _:
+                pass
+
+    def on_command_set_light_intensity(self, elem):
+        if elem.text:
+            value = int(elem.text)
+            if 0 <= value <= 100:
+                self.main_light_intensity = value
+                print("new light intensity: {}".format(value))
+
+    def on_command_water_on(self, elem):
+        self.water_on = True
+
+    def on_command_water_off(self, elem):
+        self.water_on = False
+
+    def on_command_update_from_server(self, elem):
+        print(">>>")
+        cmd_text = self.make_command_server_status()
+        print("reply to client: {}".format(cmd_text))
+        cur_loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
+
+    def make_command_server_status(self):
+        dom = md.getDOMImplementation()
+        doc = dom.createDocument(None, None, None)
+        root = doc.createElement("command")
+        root.setAttribute("opcode", "ServerStatus")
+        doc.appendChild(root)
+
+        elem = doc.createElement("lightIntensity")
+        root.appendChild(elem)
+        valElem = doc.createTextNode('99')
+        elem.appendChild(valElem)
+
+        elem = doc.createElement("waterOn")
+        root.appendChild(elem)
+        valElem = doc.createTextNode('false')
+        elem.appendChild(valElem)
+
+        return doc.toxml()
+
+    def on_command_server_shutdown(self, elem):
+        print("Shutdown command received")
+        quit(0)
 
 def main():
-    print("Terracon on {}".format(platform.platform()))
-    print("Python ({}) {}".format(platform.python_implementation(), platform.python_version()))
+    worker = Worker(gpio_present)
+    worker.run()
 
-    app = QtWidgets.QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setApplicationVersion(APP_VERSION)
+main()
 
-    parser = QtCore.QCommandLineParser()
-    parser.addHelpOption()
-    parser.addVersionOption()
-    windowed_option = QtCore.QCommandLineOption(["w", "windowed"], "Run in windowed mode")
-    parser.addOption(windowed_option)
-
-    parser.process(app)
-
-    is_windowed = False
-    if parser.isSet(windowed_option):
-        is_windowed = True
-
-    mainwnd = TerraconWindow(windowed=is_windowed)
-    mainwnd.show()
-
-    sys.exit(app.exec())
-
-
-if __name__ == '__main__':
-    main()
-
+print("exit")
