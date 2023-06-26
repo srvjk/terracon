@@ -1,11 +1,14 @@
 #!/usr/bin/python3
 
 import time
+import signal
 import asyncio
 import websockets
 import xml.etree.ElementTree as etree
 import xml.dom.minidom as md
 import terracon_program_engine as progengine
+import config_helper
+from functools import partial
 
 gpio_present = True
 
@@ -43,6 +46,7 @@ class WebServer:
     async def send_to_client(self, message: str) -> None:
         await self.client.send(message)
 
+
 class Worker:
     def __init__(self, use_gpio):
         self.use_gpio = use_gpio
@@ -52,6 +56,31 @@ class Worker:
         self.water_on = False
         self.program_engine = progengine.TerraconProgramEngine()
         self.enable_program = True
+        self.config = config_helper.TOMLHelper()
+        self.config.load('config.toml')
+
+    def read_config(self):
+        general = self.config.data.get('general', None)
+        if general:
+            self.enable_program = general.get('enable_program', self.enable_program)
+
+        self.check_config()
+
+    def check_config(self):
+        return True
+
+    def write_config(self):
+        import tomlkit
+
+        general = self.config.data.get('general')
+        if not general:
+            general = tomlkit.table()
+            self.config.data.add('general', general)
+
+        general['enable_program'] = self.enable_program
+
+    def save_config(self):
+        self.config.save()
 
     def on_new_command(self, text):
         self.parse_command(text)
@@ -105,6 +134,7 @@ class Worker:
 
     def run(self):
         print('-> main')
+        #self.read_config()
         if not self.program_engine.load_program("program_test1.py", "./programs"):
             print("Error: could not load program")
 
@@ -117,6 +147,7 @@ class Worker:
         wait_tasks = asyncio.wait(tasks)
         ioloop.run_until_complete(wait_tasks)
         ioloop.close()
+        #self.write_config()
         print('<- main')
 
     def parse_command(self, text: str):
@@ -184,12 +215,23 @@ class Worker:
 
         return doc.toxml()
 
+    def shutdown(self):
+        self.write_config()
+        self.save_config()
+        quit(0)
+
     def on_command_server_shutdown(self, elem):
         print("Shutdown command received")
-        quit(0)
+        self.shutdown()
+
+def handler_ctrl_c(worker, signum, frame):
+    res = input("Exit program? y/N")
+    if res == 'y' or res == 'Y':
+        worker.shutdown()
 
 def main():
     worker = Worker(gpio_present)
+    signal.signal(signal.SIGINT, partial(handler_ctrl_c, worker))
     worker.run()
 
 main()
