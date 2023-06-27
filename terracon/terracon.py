@@ -237,17 +237,6 @@ class Worker:
         self.save_config()
         self.should_stop = True  # TODO сделать аккуратное завершение
         self.stop_webserver.set_result(True)
-        #cur_loop = asyncio.get_event_loop()
-        #asyncio.run_coroutine_threadsafe(self.wait_for_shutdown(cur_loop), cur_loop)
-
-    async def wait_for_shutdown(self, event_loop):
-        print("Waiting for tasks to close...")
-        await asyncio.sleep(1.0)
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        [task.cancel() for task in tasks]
-        await asyncio.gather(*tasks)
-        print("done")
-        event_loop.stop()
 
     def set_script_mode(self):
         self.script_mode = True
