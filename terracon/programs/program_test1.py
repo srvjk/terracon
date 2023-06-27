@@ -18,7 +18,7 @@ class RootTask(Task):
 class LightingManager(Task):
     def __init__(self, name):
         super().__init__(name)
-        self.start_time = time.fromisoformat('20:00:00')
+        self.start_time = time.fromisoformat('13:00:00')
         self.end_time = time.fromisoformat('23:59:00')
 
     def step(self, engine: TerraconProgramEngine):

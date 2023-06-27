@@ -55,14 +55,14 @@ class Worker:
         self.main_light_intensity = 0
         self.water_on = False
         self.program_engine = progengine.TerraconProgramEngine()
-        self.enable_program = True
+        self.script_mode = True
         self.config = config_helper.TOMLHelper()
         self.config.load('config.toml')
 
     def read_config(self):
         general = self.config.data.get('general', None)
         if general:
-            self.enable_program = general.get('enable_program', self.enable_program)
+            self.script_mode = general.get('script_mode', self.script_mode)
 
         self.check_config()
 
@@ -77,7 +77,7 @@ class Worker:
             general = tomlkit.table()
             self.config.data.add('general', general)
 
-        general['enable_program'] = self.enable_program
+        general['script_mode'] = self.script_mode
 
     def save_config(self):
         self.config.save()
@@ -94,10 +94,9 @@ class Worker:
         print('running program engine')
 
         while not self.should_stop:
-            if not self.enable_program:
-                time.sleep(0.1)
-                continue
-            self.program_engine.step()
+            if self.script_mode:
+                self.program_engine.step()
+            await asyncio.sleep(0.1)
 
         print ('program engine finished')
 
@@ -150,6 +149,13 @@ class Worker:
         #self.write_config()
         print('<- main')
 
+    def set_light_intensity(self, value):
+        if value < 0:
+            value = 0
+        if value > 100:
+            value = 100
+        self.main_light_intensity = value
+
     def parse_command(self, text: str):
         root = etree.fromstring(text)
 
@@ -173,15 +179,22 @@ class Worker:
                 self.on_command_update_from_server(root)
             case "serverShutdown":
                 self.on_command_server_shutdown(root)
+            case "setScriptMode":
+                self.on_command_set_script_mode(root)
+            case "setManualMode":
+                self.on_command_set_manual_mode(root)
             case _:
                 pass
 
     def on_command_set_light_intensity(self, elem):
+        if self.script_mode:
+            print("External command 'Set light intensity' cannot be executed in Script mode")
+            return False
+
         if elem.text:
             value = int(elem.text)
-            if 0 <= value <= 100:
-                self.main_light_intensity = value
-                print("new light intensity: {}".format(value))
+            self.set_light_intensity(value)
+            print("new light intensity: {}".format(value))
 
     def on_command_water_on(self, elem):
         self.water_on = True
@@ -218,11 +231,26 @@ class Worker:
     def shutdown(self):
         self.write_config()
         self.save_config()
+        self.should_stop = True  # TODO сделать аккуратное завершение
         quit(0)
+
+    def set_script_mode(self):
+        self.script_mode = True
+
+    def set_manual_mode(self):
+        self.script_mode = False
 
     def on_command_server_shutdown(self, elem):
         print("Shutdown command received")
         self.shutdown()
+
+    def on_command_set_script_mode(self, elem):
+        print("Set script mode command received")
+        self.set_script_mode()
+
+    def on_command_set_manual_mode(self, elem):
+        print("Set manual mode command received")
+        self.set_manual_mode()
 
 def handler_ctrl_c(worker, signum, frame):
     res = input("Exit program? y/N")
