@@ -255,6 +255,12 @@ class Worker:
     def set_manual_mode(self):
         self.script_mode = False
 
+    def set_script_mode(self):
+        self.script_mode = True
+
+    def set_manual_mode(self):
+        self.script_mode = False
+
     def on_command_server_shutdown(self, elem):
         print("Shutdown command received")
         self.shutdown()
