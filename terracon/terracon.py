@@ -51,6 +51,7 @@ class Worker:
     def __init__(self, use_gpio):
         self.use_gpio = use_gpio
         self.should_stop = False
+        self.stop_webserver = None
         self.web_server = WebServer(self)
         self.main_light_intensity = 0
         self.water_on = False
@@ -81,14 +82,17 @@ class Worker:
 
     def save_config(self):
         self.config.save()
+        print("configuration saved")
 
     def on_new_command(self, text):
         self.parse_command(text)
 
     async def run_server(self):
         print('running webserver')
+        loop = asyncio.get_running_loop()
+        self.stop_webserver = loop.create_future()
         async with websockets.serve(self.web_server.ws_handler, "", 8001):
-            await asyncio.Future()
+            await self.stop_webserver
 
     async def run_program(self):
         print('running program engine')
@@ -133,7 +137,7 @@ class Worker:
 
     def run(self):
         print('-> main')
-        #self.read_config()
+        self.read_config()
         if not self.program_engine.load_program("program_test1.py", "./programs"):
             print("Error: could not load program")
 
@@ -232,7 +236,18 @@ class Worker:
         self.write_config()
         self.save_config()
         self.should_stop = True  # TODO сделать аккуратное завершение
-        quit(0)
+        self.stop_webserver.set_result(True)
+        #cur_loop = asyncio.get_event_loop()
+        #asyncio.run_coroutine_threadsafe(self.wait_for_shutdown(cur_loop), cur_loop)
+
+    async def wait_for_shutdown(self, event_loop):
+        print("Waiting for tasks to close...")
+        await asyncio.sleep(1.0)
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        [task.cancel() for task in tasks]
+        await asyncio.gather(*tasks)
+        print("done")
+        event_loop.stop()
 
     def set_script_mode(self):
         self.script_mode = True
