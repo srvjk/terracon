@@ -7,7 +7,7 @@ import websockets
 import xml.etree.ElementTree as etree
 import xml.dom.minidom as md
 import terracon_program_engine as progengine
-import config_helper
+import json
 from functools import partial
 
 gpio_present = True
@@ -57,31 +57,36 @@ class Worker:
         self.water_on = False
         self.program_engine = progengine.TerraconProgramEngine()
         self.script_mode = True
-        self.config = config_helper.TOMLHelper()
-        self.config.load('config.toml')
+        self.config_file_path = 'config.json'
+        self.read_config(self.config_file_path)
 
-    def read_config(self):
-        general = self.config.data.get('general', None)
+    def read_config(self, file_name):
+        data = None
+        try:
+            with open(file_name, "r") as read_file:
+                data = json.load(read_file)
+        except FileNotFoundError:
+            print("Could not load config: file not found")
+            return
+
+        self.parse_config(data)
+
+    def parse_config(self, data):
+        general = data["general"]
         if general:
-            self.script_mode = general.get('script_mode', self.script_mode)
+            if "script_mode" in general:
+                self.script_mode = general["script_mode"]
 
-        self.check_config()
-
-    def check_config(self):
         return True
 
-    def write_config(self):
-        import tomlkit
+    def write_config(self, file_name):
+        data = dict()
+        general = {'script_mode': self.script_mode}
+        data["general"] = general
 
-        general = self.config.data.get('general')
-        if not general:
-            general = tomlkit.table()
-            self.config.data.add('general', general)
+        with open(file_name, "w") as write_file:
+            json.dump(data, write_file)
 
-        general['script_mode'] = self.script_mode
-
-    def save_config(self):
-        self.config.save()
         print("configuration saved")
 
     def on_new_command(self, text):
@@ -137,7 +142,6 @@ class Worker:
 
     def run(self):
         print('-> main')
-        self.read_config()
         if not self.program_engine.load_program("program_test1.py", "./programs"):
             print("Error: could not load program")
 
@@ -150,7 +154,6 @@ class Worker:
         wait_tasks = asyncio.wait(tasks)
         ioloop.run_until_complete(wait_tasks)
         ioloop.close()
-        #self.write_config()
         print('<- main')
 
     def set_light_intensity(self, value):
@@ -233,8 +236,7 @@ class Worker:
         return doc.toxml()
 
     def shutdown(self):
-        self.write_config()
-        self.save_config()
+        self.write_config(self.config_file_path)
         self.should_stop = True  # TODO сделать аккуратное завершение
         self.stop_webserver.set_result(True)
 

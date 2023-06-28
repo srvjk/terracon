@@ -18,6 +18,8 @@ __pycache__
 /*.sh
 *.ini
 *.toml
+config.json
+
 
 
 
