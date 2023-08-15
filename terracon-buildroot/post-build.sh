@@ -20,3 +20,7 @@ cp ~/projects/terracon/terracon-buildroot/sshd_config ${TARGET_DIR}/etc/ssh/sshd
 
 cp ~/projects/terracon/terracon/terracon.py ${TARGET_DIR}/opt/terracon.py
 
+cp ~/projects/terracon/terracon-buildroot/terracon_launch.sh ${TARGET_DIR}/root/terracon_launch.sh
+cp ~/projects/terracon/terracon-buildroot/inittab ${TARGET_DIR}/etc/inittab
+
+
