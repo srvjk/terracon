@@ -216,6 +216,7 @@ class Worker:
 
         print('gpio finished')
 
+
     def run(self):
         print('-> main')
         if not self.program_engine.load_program("program_test1.py", "./programs"):
@@ -258,6 +259,8 @@ class Worker:
                 self.on_command_water_on(root)
             case "waterOff":
                 self.on_command_water_off(root)
+            case "checkOnline":
+                self.on_command_check_online(root)
             case "updateFromServer":
                 self.on_command_update_from_server(root)
             case "serverShutdown":
@@ -285,6 +288,13 @@ class Worker:
     def on_command_water_off(self, elem):
         self.water_on = False
 
+    def on_command_check_online(self, elem):
+        print(">>>")
+        cmd_text = self.make_command_report_online()
+        print("reply to client: {}".format(cmd_text))
+        cur_loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
+
     def on_command_update_from_server(self, elem):
         print(">>>")
         cmd_text = self.make_command_server_status()
@@ -292,21 +302,37 @@ class Worker:
         cur_loop = asyncio.get_event_loop()
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
+    def make_command_report_online(self):
+        dom = md.getDOMImplementation()
+        doc = dom.createDocument(None, None, None)
+        root = doc.createElement("command")
+        root.setAttribute("opcode", "reportOnline")
+        doc.appendChild(root)
+
+        return doc.toxml()
+
     def make_command_server_status(self):
         dom = md.getDOMImplementation()
         doc = dom.createDocument(None, None, None)
         root = doc.createElement("command")
-        root.setAttribute("opcode", "ServerStatus")
+        root.setAttribute("opcode", "serverStatus")
         doc.appendChild(root)
+
+        elem = doc.createElement("mode")
+        root.appendChild(elem)
+        txt = "script" if self.script_mode else "manual"
+        valElem = doc.createTextNode(txt)
+        elem.appendChild(valElem)
 
         elem = doc.createElement("lightIntensity")
         root.appendChild(elem)
-        valElem = doc.createTextNode('99')
+        valElem = doc.createTextNode(str(self.main_light_intensity))
         elem.appendChild(valElem)
 
         elem = doc.createElement("waterOn")
         root.appendChild(elem)
-        valElem = doc.createTextNode('false')
+        txt = 'true' if self.water_on else 'false'
+        valElem = doc.createTextNode(txt)
         elem.appendChild(valElem)
 
         return doc.toxml()
