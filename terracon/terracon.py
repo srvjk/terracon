@@ -131,7 +131,9 @@ class Worker:
         self.web_server = WebServer(self)
         self.main_light_intensity = 0
         self.water_on = False
+        self.fogger_pump_on = False
         self.program_engine = TerraconProgramEngine(self)
+        self.active_program_name = 'no-active-program'
         self.script_mode = True
         self.config_file_path = 'config.json'
         self.read_config(self.config_file_path)
@@ -188,12 +190,18 @@ class Worker:
     async def run_gpio(self):
         print('running gpio')
 
+        main_light_pump_pin = 12  # GPIO12 - управление светом
+        watering_pump_pin = 16    # GPIO16 - управление помпой верхнего полива
+        fogger_pump_pin = 20      # GPIO20 - управление помпой туманогенератора
+
         GPIO.setmode(GPIO.BCM)    # устанавливаем режим нумерации по назв. каналов
-        GPIO.setup(12, GPIO.OUT)  # назначаем пин GPIO12 выходным (управление светом)
-        GPIO.setup(16, GPIO.OUT)  # назначаем пин GPIO16 выходным (управление водяной помпой)
+        GPIO.setup(main_light_pump_pin, GPIO.OUT)
+        GPIO.setup(watering_pump_pin, GPIO.OUT)
+        GPIO.setup(fogger_pump_pin, GPIO.OUT)
 
         pwm = GPIO.PWM(12, 20000)  # устанавливаем частоту ШИМ 20 кГц
-        GPIO.output(16, GPIO.HIGH)  # помпа выключена
+        GPIO.output(watering_pump_pin, GPIO.HIGH)  # помпа выключена
+        GPIO.output(fogger_pump_pin, GPIO.HIGH)  # помпа выключена
 
         pwm.start(0)
 
@@ -201,21 +209,27 @@ class Worker:
             # яркость основного освещения
             pwm.ChangeDutyCycle(self.main_light_intensity)
 
-            # водяная помпа верхнего полива
+            # помпа верхнего полива
             if self.water_on:
-                GPIO.output(16, GPIO.LOW)  # включить помпу
+                GPIO.output(watering_pump_pin, GPIO.LOW)  # включить помпу
             else:
-                GPIO.output(16, GPIO.HIGH)  # выключить помпу
+                GPIO.output(watering_pump_pin, GPIO.HIGH)  # выключить помпу
+
+            # помпа туманогенератора
+            if self.fogger_pump_on:
+                GPIO.output(fogger_pump_pin, GPIO.LOW)  # включить помпу
+            else:
+                GPIO.output(fogger_pump_pin, GPIO.HIGH)  # выключить помпу
 
             await asyncio.sleep(0.5)
 
         pwm.stop()
-        GPIO.output(16, GPIO.HIGH)  # выходя, выключаем помпу
+        GPIO.output(watering_pump_pin, GPIO.HIGH)  # выходя, выключаем помпу
+        GPIO.output(fogger_pump_pin, GPIO.HIGH)  # выходя, выключаем помпу
 
         GPIO.cleanup()
 
         print('gpio finished')
-
 
     def run(self):
         print('-> main')
@@ -259,6 +273,10 @@ class Worker:
                 self.on_command_water_on(root)
             case "waterOff":
                 self.on_command_water_off(root)
+            case "foggerPumpOn":
+                self.on_command_fogger_pump_on(root)
+            case "foggerPumpOff":
+                self.on_command_fogger_pump_off(root)
             case "checkOnline":
                 self.on_command_check_online(root)
             case "updateFromServer":
@@ -269,6 +287,8 @@ class Worker:
                 self.on_command_set_script_mode(root)
             case "setManualMode":
                 self.on_command_set_manual_mode(root)
+            case "getProgramList":
+                self.on_command_get_program_list(root)
             case _:
                 pass
 
@@ -288,15 +308,19 @@ class Worker:
     def on_command_water_off(self, elem):
         self.water_on = False
 
+    def on_command_fogger_pump_on(self, elem):
+        self.fogger_pump_on = True
+
+    def on_command_fogger_pump_off(self, elem):
+        self.fogger_pump_on = False
+
     def on_command_check_online(self, elem):
-        print(">>>")
         cmd_text = self.make_command_report_online()
         print("reply to client: {}".format(cmd_text))
         cur_loop = asyncio.get_event_loop()
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
     def on_command_update_from_server(self, elem):
-        print(">>>")
         cmd_text = self.make_command_server_status()
         print("reply to client: {}".format(cmd_text))
         cur_loop = asyncio.get_event_loop()
@@ -365,6 +389,37 @@ class Worker:
     def on_command_set_manual_mode(self, elem):
         print("Set manual mode command received")
         self.set_manual_mode()
+
+    def on_command_get_program_list(self, elem):
+        print("Program list request received")
+        cmd_text = self.make_command_get_program_list()
+        print("reply to client: {}".format(cmd_text))
+        cur_loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
+
+    def make_command_get_program_list(self):
+        dom = md.getDOMImplementation()
+        doc = dom.createDocument(None, None, None)
+        root = doc.createElement("command")
+        root.setAttribute("opcode", "programList")
+        doc.appendChild(root)
+
+        progs_elem = doc.createElement("programs")
+        root.appendChild(progs_elem)
+
+        '''for prog in progs:
+            prog_elem = doc.createElement("program")
+            progs_elem.appendChild(prog_elem)
+            prog_name_elem.doc.createTextNode(str(prog.name))
+            prog_elem.appendChild(prog_name_elem)
+            '''
+
+        active_prog_elem = doc.createElement("activeProgram")
+        root.appendChild(active_prog_elem)
+        valElem = doc.createTextNode(str(self.active_program_name))
+        active_prog_elem.appendChild(valElem)
+
+        return doc.toxml()
 
 def handler_ctrl_c(worker, signum, frame):
     res = input("Exit program? y/N")
