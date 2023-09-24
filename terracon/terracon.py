@@ -11,9 +11,14 @@ from functools import partial
 from datetime import datetime
 import importlib
 import importlib.util
+import logging
 
 
 gpio_present = True
+
+version_major = 1
+version_minor = 0
+revision = 1
 
 try:
     import RPi.GPIO as GPIO
@@ -79,20 +84,40 @@ class TerraconProgramEngine:
 
     def load_program(self, module_name, dir_path='.'):
         module_full_path = dir_path + '/' + module_name
+        logging.info("loading scenario from module'{}'".format(module_full_path))
         module_spec = importlib.util.spec_from_file_location(module_name, module_full_path)
         if module_spec is None:
-            print('Module {} not found in {}'.format(module_name, dir_path))
+            logging.error('module {} not found in {}'.format(module_name, dir_path))
             return False
         module = importlib.util.module_from_spec(module_spec)
         if module is None:
+            logging.error("could not create module for scenario")
             return False
-        module_spec.loader.exec_module(module)
+
+        logging.info("trying to execute module '{}'...".format(module_name))
+        try:
+            module_spec.loader.exec_module(module)
+        except Exception as e:
+            logging.warning("error: {}".format(str(e)))
+        else:
+            logging.info(" ...OK")
+
         self.program = module
-        self.root_task = self.program.RootTask("root")
+        logging.info("creating root task")
+        try:
+            self.root_task = self.program.RootTask("root")
+        except Exception as e:
+            logging.warning("error: {}".format(str(e)))
+        else:
+            logging.info(" ...OK")
+
         if not self.root_task:
-            print("No root task found")
+            logging.error("no root task found")
             return False
+        logging.info("appending root task")
         self.tasks.append(self.root_task)
+
+        logging.info("scenario loaded: {}".format(module_name))
 
         return True
 
@@ -118,6 +143,9 @@ class TerraconProgramEngine:
         task.root = self.root_task
         self.tasks.append(task)
 
+        logging.info("new task {} of class {}".format(name, class_name))
+        logging.info("tasks active: {}".format(len(self.tasks)))
+
     def current_time(self):
         now = datetime.now()
         return now.time()
@@ -127,27 +155,41 @@ class Worker:
     def __init__(self, use_gpio):
         self.use_gpio = use_gpio
         self.should_stop = False
+        self.stop_program = False  # остановить программу, выполняющую сценарий
         self.stop_webserver = None
         self.web_server = WebServer(self)
         self.main_light_intensity = 0
         self.water_on = False
         self.fogger_pump_on = False
         self.program_engine = TerraconProgramEngine(self)
+        self.program_future = None  # объект Future для сценария
         self.active_program_name = 'no-active-program'
         self.script_mode = True
         self.config_file_path = 'config.json'
-        self.read_config(self.config_file_path)
+        if not self.config_exists():
+            self.write_config()
+        self.read_config()
 
-    def read_config(self, file_name):
+    def config_exists(self):
+        try:
+            open(self.config_file_path, "r")
+        except FileNotFoundError:
+            return False
+
+        return True
+
+    def read_config(self):
         data = None
         try:
-            with open(file_name, "r") as read_file:
+            with open(self.config_file_path, "r") as read_file:
                 data = json.load(read_file)
         except FileNotFoundError:
-            print("Could not load config: file not found")
-            return
+            logging.warning("Could not load config: file not found")
+            return False
 
         self.parse_config(data)
+
+        return True
 
     def parse_config(self, data):
         general = data["general"]
@@ -157,49 +199,57 @@ class Worker:
 
         return True
 
-    def write_config(self, file_name):
+    def write_config(self):
         data = dict()
         general = {'script_mode': self.script_mode}
         data["general"] = general
 
-        with open(file_name, "w") as write_file:
+        with open(self.config_file_path, "w") as write_file:
             json.dump(data, write_file)
 
-        print("configuration saved")
+        logging.info("configuration saved")
 
     def on_new_command(self, text):
         self.parse_command(text)
 
     async def run_server(self):
-        print('running webserver')
+        logging.info('running webserver')
         loop = asyncio.get_running_loop()
         self.stop_webserver = loop.create_future()
         async with websockets.serve(self.web_server.ws_handler, "", 8001):
             await self.stop_webserver
 
     async def run_program(self):
-        print('running program engine')
+        logging.info('running program engine')
 
-        while not self.should_stop:
+        if not self.program_engine.load_program(self.active_program_name, "./programs"):
+            logging.error("could not load program {}".format(self.active_program_name))
+
+        while not self.stop_program:
             if self.script_mode:
                 self.program_engine.step()
             await asyncio.sleep(0.1)
 
-        print ('program engine finished')
+        msg = 'program engine finished'
+        if self.stop_program:
+            msg += ' (by user request)'
+        logging.info(msg)
+
+        return 0
 
     async def run_gpio(self):
-        print('running gpio')
+        logging.info('running gpio')
 
-        main_light_pump_pin = 12  # GPIO12 - управление светом
-        watering_pump_pin = 16    # GPIO16 - управление помпой верхнего полива
-        fogger_pump_pin = 20      # GPIO20 - управление помпой туманогенератора
+        main_light_pin = 12     # GPIO12 - управление светом
+        watering_pump_pin = 16  # GPIO16 - управление помпой верхнего полива
+        fogger_pump_pin = 20    # GPIO20 - управление помпой туманогенератора
 
         GPIO.setmode(GPIO.BCM)    # устанавливаем режим нумерации по назв. каналов
-        GPIO.setup(main_light_pump_pin, GPIO.OUT)
+        GPIO.setup(main_light_pin, GPIO.OUT)
         GPIO.setup(watering_pump_pin, GPIO.OUT)
         GPIO.setup(fogger_pump_pin, GPIO.OUT)
 
-        pwm = GPIO.PWM(12, 20000)  # устанавливаем частоту ШИМ 20 кГц
+        pwm = GPIO.PWM(main_light_pin, 20000)  # устанавливаем частоту ШИМ 20 кГц
         GPIO.output(watering_pump_pin, GPIO.HIGH)  # помпа выключена
         GPIO.output(fogger_pump_pin, GPIO.HIGH)  # помпа выключена
 
@@ -229,23 +279,21 @@ class Worker:
 
         GPIO.cleanup()
 
-        print('gpio finished')
+        logging.info('gpio finished')
 
     def run(self):
-        print('-> main')
-        if not self.program_engine.load_program("program_test1.py", "./programs"):
-            print("Error: could not load program")
+        logging.info('-> run')
 
         ioloop = asyncio.get_event_loop()
         tasks = list()
         tasks.append(ioloop.create_task(self.run_server()))
-        tasks.append(ioloop.create_task(self.run_program()))
         if self.use_gpio:
             tasks.append(ioloop.create_task(self.run_gpio()))
         wait_tasks = asyncio.wait(tasks)
         ioloop.run_until_complete(wait_tasks)
         ioloop.close()
-        print('<- main')
+
+        logging.info('<- run')
 
     def set_light_intensity(self, value):
         if value < 0:
@@ -294,13 +342,13 @@ class Worker:
 
     def on_command_set_light_intensity(self, elem):
         if self.script_mode:
-            print("External command 'Set light intensity' cannot be executed in Script mode")
+            logging.info("External command 'Set light intensity' cannot be executed in Script mode")
             return False
 
         if elem.text:
             value = int(elem.text)
             self.set_light_intensity(value)
-            print("new light intensity: {}".format(value))
+            logging.info("new light intensity: {}".format(value))
 
     def on_command_water_on(self, elem):
         self.water_on = True
@@ -316,13 +364,11 @@ class Worker:
 
     def on_command_check_online(self, elem):
         cmd_text = self.make_command_report_online()
-        print("reply to client: {}".format(cmd_text))
         cur_loop = asyncio.get_event_loop()
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
     def on_command_update_from_server(self, elem):
         cmd_text = self.make_command_server_status()
-        print("reply to client: {}".format(cmd_text))
         cur_loop = asyncio.get_event_loop()
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
@@ -341,6 +387,12 @@ class Worker:
         root = doc.createElement("command")
         root.setAttribute("opcode", "serverStatus")
         doc.appendChild(root)
+
+        elem = doc.createElement("version")
+        root.appendChild(elem)
+        txt = "{}.{}.{}".format(version_major, version_minor, revision)
+        valElem = doc.createTextNode(txt)
+        elem.appendChild(valElem)
 
         elem = doc.createElement("mode")
         root.appendChild(elem)
@@ -363,37 +415,40 @@ class Worker:
 
     def shutdown(self):
         self.write_config(self.config_file_path)
+        self.stop_program = True  # завершить сценарий, если он выполняется
         self.should_stop = True  # TODO сделать аккуратное завершение
         self.stop_webserver.set_result(True)
 
     def set_script_mode(self):
+        if self.script_mode:
+            print('script already running')
+            return
+
         self.script_mode = True
+        self.stop_program = False
+        self.active_program_name = "program_test1.py"
+        cur_loop = asyncio.get_event_loop()
+        self.program_future = asyncio.run_coroutine_threadsafe(self.run_program(), cur_loop)
 
     def set_manual_mode(self):
         self.script_mode = False
-
-    def set_script_mode(self):
-        self.script_mode = True
-
-    def set_manual_mode(self):
-        self.script_mode = False
+        self.stop_program = True
 
     def on_command_server_shutdown(self, elem):
-        print("Shutdown command received")
+        logging.info("Shutdown command received")
         self.shutdown()
 
     def on_command_set_script_mode(self, elem):
-        print("Set script mode command received")
+        logging.info("Set script mode command received")
         self.set_script_mode()
 
     def on_command_set_manual_mode(self, elem):
-        print("Set manual mode command received")
+        logging.info("Set manual mode command received")
         self.set_manual_mode()
 
     def on_command_get_program_list(self, elem):
-        print("Program list request received")
+        logging.info("Program list request received")
         cmd_text = self.make_command_get_program_list()
-        print("reply to client: {}".format(cmd_text))
         cur_loop = asyncio.get_event_loop()
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
@@ -427,10 +482,16 @@ def handler_ctrl_c(worker, signum, frame):
         worker.shutdown()
 
 def main():
+    logging.basicConfig(level=logging.INFO, filename='terracon.log', filemode='a',
+                        format="[%(asctime)s : %(levelname)s] %(message)s")
+
+    logging.info("Program (re)started")
+
     worker = Worker(gpio_present)
     signal.signal(signal.SIGINT, partial(handler_ctrl_c, worker))
     worker.run()
 
+    logging.inf0("Exit")
+
 main()
 
-print("exit")
