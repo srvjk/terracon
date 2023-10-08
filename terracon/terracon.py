@@ -84,42 +84,14 @@ class TerraconProgramEngine:
 
     def load_program(self, module_name, dir_path='.'):
         module_full_path = dir_path + '/' + module_name
-        logging.info("loading scenario from module'{}'".format(module_full_path))
-        module_spec = importlib.util.spec_from_file_location(module_name, module_full_path)
-        if module_spec is None:
-            logging.error('module {} not found in {}'.format(module_name, dir_path))
-            return False
-        module = importlib.util.module_from_spec(module_spec)
-        if module is None:
-            logging.error("could not create module for scenario")
-            return False
-
-        logging.info("trying to execute module '{}'...".format(module_name))
-        try:
-            module_spec.loader.exec_module(module)
-        except Exception as e:
-            logging.warning("error executing module: {}".format(str(e)))
-            return False
-        else:
-            logging.info(" ...OK")
-
-        self.program = module
-        logging.info("creating root task")
-        try:
-            self.root_task = self.program.RootTask("root")
-        except Exception as e:
-            logging.warning("error creating root task: {}".format(str(e)))
-            return False
-        else:
-            logging.info(" ...OK")
-
-        if not self.root_task:
-            logging.error("no root task found")
-            return False
-        logging.info("appending root task")
-        self.tasks.append(self.root_task)
-
-        logging.info("scenario loaded: {}".format(module_name))
+        logging.info("using scenario from module'{}'".format(module_full_path))
+        code_object = None
+        with open(module_full_path) as f:
+            prog_text = f.read()
+            code_object = compile(prog_text, 'none', 'exec')
+            logging.info('executing code...')
+            exec(code_object,
+                 {"Task": Task, "TerraconProgramEngine": TerraconProgramEngine, "engine": self})
 
         return True
 
@@ -157,7 +129,7 @@ class Worker:
     def __init__(self, use_gpio):
         self.use_gpio = use_gpio
         self.should_stop = False
-        self.stop_program = False  # остановить программу, выполняющую сценарий
+        self.do_program_thread = False
         self.stop_webserver = None
         self.web_server = WebServer(self)
         self.main_light_intensity = 0
@@ -165,8 +137,9 @@ class Worker:
         self.fogger_pump_on = False
         self.program_engine = TerraconProgramEngine(self)
         self.program_future = None  # объект Future для сценария
-        self.active_program_name = 'no-active-program'
+        self.active_program_name = 'program_test1.py'  #'no-active-program'
         self.script_mode = True
+        self.script_mode_changed = False
         self.config_file_path = 'config.json'
         self.program_thread = None
         if not self.config_exists():
@@ -222,61 +195,25 @@ class Worker:
         async with websockets.serve(self.web_server.ws_handler, "", 8001):
             await self.stop_webserver
 
-    def run_program(self):
-        logging.info('running program engine')
+    def program_thread_func(self):
+        logging.info('starting program thread function')
 
-        self.stop_program = False
+        self.do_program_thread = True
 
-        self.script_mode = True
-        self.active_program_name = "program_test1.py"
+        while self.do_program_thread:
+            if self.script_mode_changed:
+                if self.script_mode == True:
+                    logging.info('starting program {}'.format(self.active_program_name))
+                    self.program_engine.load_program(module_name=self.active_program_name, dir_path='./programs')
 
-        if not self.program_engine.load_program(self.active_program_name, "./programs"):
-            logging.error("could not load program {}".format(self.active_program_name))
+                self.script_mode_changed = False
 
-        while not self.stop_program:
             if self.script_mode:
                 self.program_engine.step()
+
             time.sleep(0.1)
 
-        msg = 'program engine finished'
-        if self.stop_program:
-            msg += ' (by user request)'
-        logging.info(msg)
-
-        return 0
-
-    def run_program_v2(self):
-        logging.info('running program engine v2')
-
-        self.stop_program = False
-        self.script_mode = True
-
-        dir_path = "./programs"
-        module_name = "program_test1.py"
-        module_full_path = dir_path + '/' + module_name
-        logging.info("using scenario from module'{}'".format(module_full_path))
-        code_object = None
-        with open(module_full_path) as f:
-            prog_text = f.read()
-            code_object = compile(prog_text, 'none', 'exec')
-            logging.info('executing code...')
-            exec(code_object,
-                 {"Task": Task, "TerraconProgramEngine": TerraconProgramEngine, "engine": self.program_engine})
-
-        logging.info('program loaded, starting working cycle')
-
-        i = 0
-        while not self.stop_program:
-            if self.script_mode:
-                self.program_engine.step()
-            #print("program step {}".format(i))
-            i += 1
-            time.sleep(0.1)
-
-        msg = 'program engine v2 finished'
-        if self.stop_program:
-            msg += ' (by user request)'
-        logging.info(msg)
+        logging.info('program thread function finished')
 
         return 0
 
@@ -328,7 +265,7 @@ class Worker:
         logging.info('-> run')
 
         logging.info('starting program thread...')
-        self.program_thread = threading.Thread(target=self.run_program_v2)
+        self.program_thread = threading.Thread(target=self.program_thread_func)
         self.program_thread.start()
         logging.info('done')
 
@@ -357,7 +294,7 @@ class Worker:
     def parse_command(self, text: str):
         root = etree.fromstring(text)
 
-        print(root.tag, root.attrib)
+        #print(root.tag, root.attrib)
 
         if root.tag != "command":
             return
@@ -467,28 +404,24 @@ class Worker:
 
     def shutdown(self):
         self.write_config(self.config_file_path)
-        self.stop_program = True  # завершить сценарий, если он выполняется
+        self.do_program_thread = False
         self.should_stop = True  # TODO сделать аккуратное завершение
         self.stop_webserver.set_result(True)
 
     def set_script_mode(self):
-        if self.script_mode:
-            print('script already running')
-            return
-
+        if self.script_mode == True:
+            return  # уже в нужном режиме
         self.script_mode = True
-
-        logging.info("running program in separate thread")
-        thread = threading.Thread(target=self.run_program())
-        thread.start()
-        logging.info("thread started")
+        self.script_mode_changed = True
 
     def set_manual_mode(self):
+        if self.script_mode == False:
+            return  # уже в нужном режиме
         self.script_mode = False
-        self.stop_program = True
+        self.script_mode_changed = True
 
     def on_command_server_shutdown(self, elem):
-        logging.info("Shutdown command received")
+        logging.info("shutdown command received")
         self.shutdown()
 
     def on_command_set_script_mode(self, elem):
