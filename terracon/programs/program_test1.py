@@ -1,9 +1,11 @@
-from terracon import TerraconProgramEngine, Task
+#from terracon import TerraconProgramEngine, Task
 from datetime import time
+import logging
 
 class RootTask(Task):
     def __init__(self, name):
         super().__init__(name)
+        logging.info('root task init')
         self.light_intensity = 0
         self.min_light_intensity = 1
         self.max_light_intensity = 99
@@ -12,6 +14,7 @@ class RootTask(Task):
         # если в списке заданий не найден LightingManager, создаем его
         lm = engine.find_task("LightingManager")
         if not lm:
+            #logging.info("creating lighting manager")
             engine.new_task(LightingManager)
 
     def apply(self, engine):
@@ -21,7 +24,8 @@ class RootTask(Task):
 class LightingManager(Task):
     def __init__(self, name):
         super().__init__(name)
-        self.start_time = time.fromisoformat('7:30:00')
+        logging.info('lighting manager init')
+        self.start_time = time.fromisoformat('07:30:00')
         self.end_time = time.fromisoformat('23:59:00')
 
     def step(self, engine: TerraconProgramEngine):
@@ -64,3 +68,13 @@ class Sunset(Task):
             print("Sunset: light at min, finishing")
             self.finish()
         self.root.apply(engine)
+
+def program_main(engine):
+    print('executing program main function')
+    engine.root_task = RootTask("root")
+    engine.tasks.append(engine.root_task)
+    print(engine)
+    print(engine.tasks)
+    print('done!')
+
+program_main(engine)

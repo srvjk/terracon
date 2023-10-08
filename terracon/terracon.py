@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-
+import threading
 import time
 import signal
 import asyncio
@@ -12,7 +12,7 @@ from datetime import datetime
 import importlib
 import importlib.util
 import logging
-
+import threading
 
 gpio_present = True
 
@@ -98,7 +98,8 @@ class TerraconProgramEngine:
         try:
             module_spec.loader.exec_module(module)
         except Exception as e:
-            logging.warning("error: {}".format(str(e)))
+            logging.warning("error executing module: {}".format(str(e)))
+            return False
         else:
             logging.info(" ...OK")
 
@@ -107,7 +108,8 @@ class TerraconProgramEngine:
         try:
             self.root_task = self.program.RootTask("root")
         except Exception as e:
-            logging.warning("error: {}".format(str(e)))
+            logging.warning("error creating root task: {}".format(str(e)))
+            return False
         else:
             logging.info(" ...OK")
 
@@ -166,6 +168,7 @@ class Worker:
         self.active_program_name = 'no-active-program'
         self.script_mode = True
         self.config_file_path = 'config.json'
+        self.program_thread = None
         if not self.config_exists():
             self.write_config()
         self.read_config()
@@ -219,8 +222,13 @@ class Worker:
         async with websockets.serve(self.web_server.ws_handler, "", 8001):
             await self.stop_webserver
 
-    async def run_program(self):
+    def run_program(self):
         logging.info('running program engine')
+
+        self.stop_program = False
+
+        self.script_mode = True
+        self.active_program_name = "program_test1.py"
 
         if not self.program_engine.load_program(self.active_program_name, "./programs"):
             logging.error("could not load program {}".format(self.active_program_name))
@@ -228,9 +236,44 @@ class Worker:
         while not self.stop_program:
             if self.script_mode:
                 self.program_engine.step()
-            await asyncio.sleep(0.1)
+            time.sleep(0.1)
 
         msg = 'program engine finished'
+        if self.stop_program:
+            msg += ' (by user request)'
+        logging.info(msg)
+
+        return 0
+
+    def run_program_v2(self):
+        logging.info('running program engine v2')
+
+        self.stop_program = False
+        self.script_mode = True
+
+        dir_path = "./programs"
+        module_name = "program_test1.py"
+        module_full_path = dir_path + '/' + module_name
+        logging.info("using scenario from module'{}'".format(module_full_path))
+        code_object = None
+        with open(module_full_path) as f:
+            prog_text = f.read()
+            code_object = compile(prog_text, 'none', 'exec')
+            logging.info('executing code...')
+            exec(code_object,
+                 {"Task": Task, "TerraconProgramEngine": TerraconProgramEngine, "engine": self.program_engine})
+
+        logging.info('program loaded, starting working cycle')
+
+        i = 0
+        while not self.stop_program:
+            if self.script_mode:
+                self.program_engine.step()
+            #print("program step {}".format(i))
+            i += 1
+            time.sleep(0.1)
+
+        msg = 'program engine v2 finished'
         if self.stop_program:
             msg += ' (by user request)'
         logging.info(msg)
@@ -284,7 +327,14 @@ class Worker:
     def run(self):
         logging.info('-> run')
 
-        ioloop = asyncio.get_event_loop()
+        logging.info('starting program thread...')
+        self.program_thread = threading.Thread(target=self.run_program_v2)
+        self.program_thread.start()
+        logging.info('done')
+
+        logging.info('starting async event loop')
+        ioloop = asyncio.new_event_loop()
+        asyncio.set_event_loop(ioloop)
         tasks = list()
         tasks.append(ioloop.create_task(self.run_server()))
         if self.use_gpio:
@@ -292,6 +342,8 @@ class Worker:
         wait_tasks = asyncio.wait(tasks)
         ioloop.run_until_complete(wait_tasks)
         ioloop.close()
+
+        self.program_thread.join()
 
         logging.info('<- run')
 
@@ -425,10 +477,11 @@ class Worker:
             return
 
         self.script_mode = True
-        self.stop_program = False
-        self.active_program_name = "program_test1.py"
-        cur_loop = asyncio.get_event_loop()
-        self.program_future = asyncio.run_coroutine_threadsafe(self.run_program(), cur_loop)
+
+        logging.info("running program in separate thread")
+        thread = threading.Thread(target=self.run_program())
+        thread.start()
+        logging.info("thread started")
 
     def set_manual_mode(self):
         self.script_mode = False
@@ -488,7 +541,7 @@ def main():
     logging.info("Program (re)started")
 
     worker = Worker(gpio_present)
-    signal.signal(signal.SIGINT, partial(handler_ctrl_c, worker))
+    #signal.signal(signal.SIGINT, partial(handler_ctrl_c, worker))
     worker.run()
 
     logging.inf0("Exit")
