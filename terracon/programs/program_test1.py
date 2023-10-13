@@ -7,8 +7,8 @@ class RootTask(Task):
         super().__init__(name)
         logging.info('root task init')
         self.light_intensity = 0
-        self.min_light_intensity = 1
-        self.max_light_intensity = 99
+        self.min_light_intensity = 0
+        self.max_light_intensity = 100
 
     def step(self, engine):
         # если в списке заданий не найден LightingManager, создаем его
@@ -25,17 +25,19 @@ class LightingManager(Task):
     def __init__(self, name):
         super().__init__(name)
         logging.info('lighting manager init')
-        self.start_time = time.fromisoformat('07:30:00')
+        self.start_time = time.fromisoformat('07:00:00')
         self.end_time = time.fromisoformat('23:59:00')
 
     def step(self, engine: TerraconProgramEngine):
         t = engine.current_time()
         if self.start_time < t < self.end_time:
-            if self.root.light_intensity <= self.root.min_light_intensity:
-                engine.new_task(Sunrise)
+            if self.root.light_intensity < self.root.max_light_intensity:
+                if not engine.task_exists("Sunrise"):
+                    engine.new_task(Sunrise)
         else:
-            if self.root.light_intensity >= self.root.max_light_intensity:
-                engine.new_task(Sunset)
+            if self.root.light_intensity > self.root.min_light_intensity:
+                if not engine.task_exists("Sunset"):
+                    engine.new_task(Sunset)
 
 class Sunrise(Task):
     def __init__(self, name):
@@ -52,9 +54,9 @@ class Sunrise(Task):
             li = self.root.max_light_intensity
 
         self.root.light_intensity = li
-        print("light: {}".format(self.root.light_intensity))
+        logging.info("light: {}".format(self.root.light_intensity))
         if self.root.light_intensity >= self.root.max_light_intensity:
-            print("Sunrise: light at max, finishing")
+            logging.info("Sunrise: light at max, finishing")
             self.finish()
         self.root.apply(engine)
 
@@ -64,17 +66,18 @@ class Sunset(Task):
 
     def step(self, engine):
         self.root.light_intensity -= 1
-        if self.root.light_intensity <= self.min_light_intensity:
-            print("Sunset: light at min, finishing")
+        logging.info("light: {}".format(self.root.light_intensity))
+        if self.root.light_intensity <= self.root.min_light_intensity:
+            logging.info("Sunset: light at min, finishing")
             self.finish()
         self.root.apply(engine)
 
 def program_main(engine):
-    print('executing program main function')
+    logging.info('executing program main function')
     engine.root_task = RootTask("root")
     engine.tasks.append(engine.root_task)
-    print(engine)
-    print(engine.tasks)
-    print('done!')
+    #print(engine)
+    #print(engine.tasks)
+    logging.info('program main function finished')
 
 program_main(engine)

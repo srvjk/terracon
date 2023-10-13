@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+
 import threading
 import time
 import signal
@@ -54,6 +55,8 @@ class WebServer:
     async def send_to_client(self, message: str) -> None:
         await self.client.send(message)
 
+def short_class_name(class_type):
+    return class_type.__name__
 
 class Task:
     def __init__(self, name):
@@ -61,6 +64,9 @@ class Task:
         self.root = None
         self.is_done = False
         self.start_time_stamp = datetime.now()
+
+    def short_class_name(self):
+        return type(self).__name__
 
     def time_from_start_sec(self):
         delta = datetime.now() - self.start_time_stamp
@@ -73,7 +79,6 @@ class Task:
     def finish(self):
         self.is_done = True
 
-
 class TerraconProgramEngine:
     def __init__(self, worker):
         self.should_stop = False
@@ -81,6 +86,7 @@ class TerraconProgramEngine:
         self.tasks = list()
         self.root_task = None
         self.worker = worker
+        self.prev_task_count = 0
 
     def load_program(self, module_name, dir_path='.'):
         module_full_path = dir_path + '/' + module_name
@@ -98,26 +104,42 @@ class TerraconProgramEngine:
     def step(self):
         tmp_tasks = [task for task in self.tasks if not task.is_done]
         self.tasks = tmp_tasks
+        cur_task_count = len(self.tasks)
+        if cur_task_count != self.prev_task_count:
+            logging.info("task count changed: {} -> {}".format(self.prev_task_count, cur_task_count))
+            tasks_str = "tasks now: "
+            for task in self.tasks:
+                tasks_str += task.name
+                tasks_str += "; "
+            logging.info(tasks_str)
+
+        self.prev_task_count = cur_task_count
 
         for task in self.tasks:
             task.step(self)
+
+    def task_exists(self, task_name):
+        for task in self.tasks:
+            if task.name == task_name:
+                return True
+        return False
 
     def find_task(self, task_name):
         for task in self.tasks:
             if task.name == task_name:
                 return task
 
-    def new_task(self, class_name, task_name = ""):
-        name = class_name
+    def new_task(self, task_class_type, task_name = ""):
+        name = short_class_name(task_class_type)
         if task_name:
             name = task_name
         if self.find_task(name):
             return False
-        task = class_name(name)
+        task = task_class_type(name)
         task.root = self.root_task
         self.tasks.append(task)
 
-        logging.info("new task {} of class {}".format(name, class_name))
+        logging.info("new task {} of class {}".format(name, task_class_type))
         logging.info("tasks active: {}".format(len(self.tasks)))
 
     def current_time(self):
