@@ -33,10 +33,22 @@ class LightingManager(Task):
         if self.start_time < t < self.end_time:
             if self.root.light_intensity < self.root.max_light_intensity:
                 if not engine.task_exists("Sunrise"):
+                    logging.info(">> Start sunrise:")
+                    logging.info(">>> current time {} is in ({}, {})".format(t, self.start_time, self.end_time))
+                    logging.info(">>> current light at {} < max {}".format(
+                        self.root.light_intensity, self.root.max_light_intensity
+                    ))
+                    logging.info("<< ")
                     engine.new_task(Sunrise)
         else:
             if self.root.light_intensity > self.root.min_light_intensity:
                 if not engine.task_exists("Sunset"):
+                    logging.info(">> Start sunset:")
+                    logging.info(">>> current time {} is out of ({}, {})".format(t, self.start_time, self.end_time))
+                    logging.info(">>> current light at {} > min {}".format(
+                        self.root.light_intensity, self.root.min_light_intensity
+                    ))
+                    logging.info("<< ")
                     engine.new_task(Sunset)
 
 class Sunrise(Task):
@@ -49,7 +61,7 @@ class Sunrise(Task):
         if self.k == 0:
             self.k = (self.root.max_light_intensity - self.root.min_light_intensity) / self.duration
 
-        li = self.k * self.time_from_start_sec()
+        li = self.root.min_light_intensity + self.k * self.time_from_start_sec()
         if li > self.root.max_light_intensity:
             li = self.root.max_light_intensity
 
@@ -63,9 +75,18 @@ class Sunrise(Task):
 class Sunset(Task):
     def __init__(self, name):
         super().__init__(name)
+        self.duration = 5  # в секундах
+        self.k = 0
 
     def step(self, engine):
-        self.root.light_intensity -= 1
+        if self.k == 0:
+            self.k = (self.root.min_light_intensity - self.root.max_light_intensity) / self.duration
+
+        li = self.root.max_light_intensity + self.k * self.time_from_start_sec()
+        if li < self.root.min_light_intensity:
+            li = self.root.min_light_intensity
+
+        self.root.light_intensity = li
         logging.info("light: {}".format(self.root.light_intensity))
         if self.root.light_intensity <= self.root.min_light_intensity:
             logging.info("Sunset: light at min, finishing")

@@ -499,7 +499,7 @@ def main():
     #signal.signal(signal.SIGINT, partial(handler_ctrl_c, worker))
     worker.run()
 
-    logging.inf0("Exit")
+    logging.info("Exit")
 
 main()
 
