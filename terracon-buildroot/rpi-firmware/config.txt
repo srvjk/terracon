@@ -26,5 +26,13 @@ gpu_mem_1024=100
 dtoverlay=miniuart-bt
 dtoverlay=vc4-kms-v3d
 
+# enable I2C bus
+dtoverlay=i2c-bcm2708
+dtparam=i2c_arm=on
+dtparam=i2c1=on
+
+# enable external DS3231 real-time clock device on I2C bus
+dtoverlay=i2c-rtc,ds3231
+
 # enable autoprobing of Bluetooth driver without need of hciattach/btattach
 dtoverlay=krnbt=on

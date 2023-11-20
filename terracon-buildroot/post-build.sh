@@ -23,4 +23,4 @@ cp ~/projects/terracon/terracon/terracon.py ${TARGET_DIR}/opt/terracon.py
 cp ~/projects/terracon/terracon-buildroot/terracon_launch.sh ${TARGET_DIR}/root/terracon_launch.sh
 cp ~/projects/terracon/terracon-buildroot/inittab ${TARGET_DIR}/etc/inittab
 
-
+cp ~/projects/terracon/terracon-buildroot/S99Modules ${TARGET_DIR}/etc/init.d/S99Modules
