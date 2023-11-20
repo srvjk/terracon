@@ -79,6 +79,54 @@ class Task:
     def finish(self):
         self.is_done = True
 
+class DoSunrise(Task):
+    def __init__(self, name):
+        super().__init__(name)
+        self.light_intensity = 0
+        self.min_light_intensity = 0
+        self.max_light_intensity = 100
+        self.duration = 30  # в секундах
+        self.k = 0
+
+    def step(self, engine):
+        if self.k == 0:
+            self.k = (self.max_light_intensity - self.min_light_intensity) / self.duration
+
+        li = self.min_light_intensity + self.k * self.time_from_start_sec()
+        if li > self.max_light_intensity:
+            li = self.max_light_intensity
+
+        self.light_intensity = li
+        logging.info("light: {}".format(self.light_intensity))
+        if self.light_intensity >= self.max_light_intensity:
+            logging.info("Sunrise: light at max, finishing")
+            self.finish()
+        engine.worker.main_light_intensity = self.light_intensity  #TODO переделать через apply()
+
+class DoSunset(Task):
+    def __init__(self, name):
+        super().__init__(name)
+        self.light_intensity = 0
+        self.min_light_intensity = 0
+        self.max_light_intensity = 100
+        self.duration = 30  # в секундах
+        self.k = 0
+
+    def step(self, engine):
+        if self.k == 0:
+            self.k = (self.min_light_intensity - self.max_light_intensity) / self.duration
+
+        li = self.max_light_intensity + self.k * self.time_from_start_sec()
+        if li < self.min_light_intensity:
+            li = self.min_light_intensity
+
+        self.light_intensity = li
+        logging.info("light: {}".format(self.light_intensity))
+        if self.light_intensity <= self.min_light_intensity:
+            logging.info("Sunset: light at min, finishing")
+            self.finish()
+        engine.worker.main_light_intensity = self.light_intensity  #TODO переделать через apply()
+
 class TerraconProgramEngine:
     def __init__(self, worker):
         self.should_stop = False
@@ -160,6 +208,7 @@ class Worker:
         self.program_engine = TerraconProgramEngine(self)
         self.program_future = None  # объект Future для сценария
         self.active_program_name = 'program_test1.py'  #'no-active-program'
+        self.current_single_task: Task = None  # одиночн. задача, выполн. вне программы (напр., по команде с пульта)
         self.script_mode = True
         self.script_mode_changed = False
         self.config_file_path = 'config.json'
@@ -231,7 +280,15 @@ class Worker:
                 self.script_mode_changed = False
 
             if self.script_mode:
-                self.program_engine.step()
+                if not self.current_single_task:
+                    self.program_engine.step()
+                else:
+                    logging.warning("single task running at script mode, skipping program step")
+            else:
+                if self.current_single_task:
+                    self.current_single_task.step(self.program_engine)
+                    if self.current_single_task.is_done:
+                        self.current_single_task = None
 
             time.sleep(0.1)
 
@@ -239,7 +296,7 @@ class Worker:
 
         return 0
 
-    async def run_gpio(self):
+    '''async def run_gpio(self):
         logging.info('running gpio')
 
         main_light_pin = 12     # GPIO12 - управление светом
@@ -274,6 +331,66 @@ class Worker:
                 GPIO.output(fogger_pump_pin, GPIO.HIGH)  # выключить помпу
 
             await asyncio.sleep(0.5)
+
+        pwm.stop()
+        GPIO.output(watering_pump_pin, GPIO.HIGH)  # выходя, выключаем помпу
+        GPIO.output(fogger_pump_pin, GPIO.HIGH)  # выходя, выключаем помпу
+
+        GPIO.cleanup()
+
+        logging.info('gpio finished')'''
+
+    async def run_gpio(self):
+        logging.info('running gpio')
+
+        min_light_freq = 0.0
+        max_light_freq = 20000.0
+        min_light_duty_cycle = 0.0
+        max_light_duty_cycle = 100.0
+
+        main_light_pin = 12     # GPIO12 - управление светом
+        watering_pump_pin = 16  # GPIO16 - управление помпой верхнего полива
+        fogger_pump_pin = 20    # GPIO20 - управление помпой туманогенератора
+
+        GPIO.setmode(GPIO.BCM)    # устанавливаем режим нумерации по назв. каналов
+        GPIO.setup(main_light_pin, GPIO.OUT)
+        GPIO.setup(watering_pump_pin, GPIO.OUT)
+        GPIO.setup(fogger_pump_pin, GPIO.OUT)
+
+        pwm = GPIO.PWM(main_light_pin, 20000)  # устанавливаем частоту ШИМ 20 кГц
+        GPIO.output(watering_pump_pin, GPIO.HIGH)  # помпа выключена
+        GPIO.output(fogger_pump_pin, GPIO.HIGH)  # помпа выключена
+
+        pwm.start(0)
+
+        while not self.should_stop:
+            # яркость основного освещения
+            light_freq = 20000
+            light_duty_cycle = 0
+            if self.main_light_intensity > 0:
+                light_freq = int(
+                    min_light_freq + (max_light_freq - min_light_freq) * (self.main_light_intensity / 100.0)
+                )
+                light_duty_cycle = int(
+                    min_light_duty_cycle + (max_light_duty_cycle - min_light_duty_cycle) * (self.main_light_intensity / 100.0)
+                )
+
+            pwm.ChangeFrequency(light_freq)
+            pwm.ChangeDutyCycle(light_duty_cycle)
+
+            # помпа верхнего полива
+            if self.water_on:
+                GPIO.output(watering_pump_pin, GPIO.LOW)  # включить помпу
+            else:
+                GPIO.output(watering_pump_pin, GPIO.HIGH)  # выключить помпу
+
+            # помпа туманогенератора
+            if self.fogger_pump_on:
+                GPIO.output(fogger_pump_pin, GPIO.LOW)  # включить помпу
+            else:
+                GPIO.output(fogger_pump_pin, GPIO.HIGH)  # выключить помпу
+
+            await asyncio.sleep(0.05)
 
         pwm.stop()
         GPIO.output(watering_pump_pin, GPIO.HIGH)  # выходя, выключаем помпу
@@ -348,6 +465,10 @@ class Worker:
                 self.on_command_set_manual_mode(root)
             case "getProgramList":
                 self.on_command_get_program_list(root)
+            case "doSunrise":
+                self.on_command_do_sunrise(root)
+            case "doSunset":
+                self.on_command_do_sunset(root)
             case _:
                 pass
 
@@ -425,7 +546,7 @@ class Worker:
         return doc.toxml()
 
     def shutdown(self):
-        self.write_config(self.config_file_path)
+        self.write_config()
         self.do_program_thread = False
         self.should_stop = True  # TODO сделать аккуратное завершение
         self.stop_webserver.set_result(True)
@@ -435,12 +556,14 @@ class Worker:
             return  # уже в нужном режиме
         self.script_mode = True
         self.script_mode_changed = True
+        self.write_config()
 
     def set_manual_mode(self):
         if self.script_mode == False:
             return  # уже в нужном режиме
         self.script_mode = False
         self.script_mode_changed = True
+        self.write_config()
 
     def on_command_server_shutdown(self, elem):
         logging.info("shutdown command received")
@@ -483,6 +606,16 @@ class Worker:
         active_prog_elem.appendChild(valElem)
 
         return doc.toxml()
+
+    def on_command_do_sunrise(self, elem):
+        logging.info("Sunrise command received")
+        if self.script_mode == False:
+            self.current_single_task = DoSunrise("Sunrise")
+
+    def on_command_do_sunset(self, elem):
+        logging.info("Sunset command received")
+        if self.script_mode == False:
+            self.current_single_task = DoSunset("Sunset")
 
 def handler_ctrl_c(worker, signum, frame):
     res = input("Exit program? y/N")
