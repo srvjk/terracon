@@ -9,6 +9,7 @@ class RootTask(Task):
         self.light_intensity = 0
         self.min_light_intensity = 0
         self.max_light_intensity = 100
+        self.water_on = False
 
     def step(self, engine):
         # если в списке заданий не найден LightingManager, создаем его
@@ -17,8 +18,15 @@ class RootTask(Task):
             #logging.info("creating lighting manager")
             engine.new_task(LightingManager)
 
+        # если в списке заданий не найден WateringManager, создаем его
+        wm = engine.find_task("WateringManager")
+        if not wm:
+            #logging.info("creating watering manager")
+            engine.new_task(WateringManager)
+
     def apply(self, engine):
         engine.worker.main_light_intensity = self.light_intensity
+        engine.worker.water_on = self.water_on
 
 
 class LightingManager(Task):
@@ -51,9 +59,11 @@ class LightingManager(Task):
                     logging.info("<< ")
                     engine.new_task(Sunset)
 
+
 class Sunrise(Task):
     def __init__(self, name):
         super().__init__(name)
+        logging.info('sunrise init')
         self.duration = 5  # в секундах
         self.k = 0
 
@@ -66,15 +76,17 @@ class Sunrise(Task):
             li = self.root.max_light_intensity
 
         self.root.light_intensity = li
-        logging.info("light: {}".format(self.root.light_intensity))
+        logging.info("light: {:.2f}".format(self.root.light_intensity))
         if self.root.light_intensity >= self.root.max_light_intensity:
             logging.info("Sunrise: light at max, finishing")
             self.finish()
         self.root.apply(engine)
 
+
 class Sunset(Task):
     def __init__(self, name):
         super().__init__(name)
+        logging.info('sunset init')
         self.duration = 5  # в секундах
         self.k = 0
 
@@ -87,14 +99,47 @@ class Sunset(Task):
             li = self.root.min_light_intensity
 
         self.root.light_intensity = li
-        logging.info("light: {}".format(self.root.light_intensity))
+        logging.info("light: {:.2f}".format(self.root.light_intensity))
         if self.root.light_intensity <= self.root.min_light_intensity:
             logging.info("Sunset: light at min, finishing")
             self.finish()
         self.root.apply(engine)
 
+class WateringManager(Task):
+    def __init__(self, name):
+        super().__init__(name)
+        logging.info('watering manager init')
+        self.watering_intervals = [
+            ('22:35:00', '22:35:30')
+        ]
+
+    def step(self, engine: TerraconProgramEngine):
+        t = engine.current_time()
+
+        # смотрим, попадаем ли мы по времени хотя бы в один интервал полива (они могут перекрываться!)
+        hit = False
+        for interval in self.watering_intervals:
+            start_time = time.fromisoformat(interval[0])
+            end_time = time.fromisoformat(interval[1])
+            if start_time < t < end_time:
+                hit = True
+                break
+
+        if hit:
+            if not self.root.water_on:
+                logging.info("starting watering")
+                self.root.water_on = True
+                self.root.apply(engine)
+        else:
+            if self.root.water_on:
+                logging.info("finishing watering")
+                self.root.water_on = False
+                self.root.apply(engine)
+
+
 def program_main(engine):
     logging.info('executing program main function')
+    engine.clear_tasks()
     engine.root_task = RootTask("root")
     engine.tasks.append(engine.root_task)
     #print(engine)

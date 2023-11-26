@@ -82,11 +82,11 @@ class Task:
 class DoSunrise(Task):
     def __init__(self, name):
         super().__init__(name)
-        self.light_intensity = 0
-        self.min_light_intensity = 0
-        self.max_light_intensity = 100
-        self.duration = 30  # в секундах
-        self.k = 0
+        self.light_intensity = float(0)
+        self.min_light_intensity = float(0)
+        self.max_light_intensity = float(100)
+        self.duration = float(60)  # в секундах
+        self.k = float(0)
 
     def step(self, engine):
         if self.k == 0:
@@ -106,11 +106,11 @@ class DoSunrise(Task):
 class DoSunset(Task):
     def __init__(self, name):
         super().__init__(name)
-        self.light_intensity = 0
-        self.min_light_intensity = 0
-        self.max_light_intensity = 100
-        self.duration = 30  # в секундах
-        self.k = 0
+        self.light_intensity = float(0)
+        self.min_light_intensity = float(0)
+        self.max_light_intensity = float(100)
+        self.duration = float(60)  # в секундах
+        self.k = float(0)
 
     def step(self, engine):
         if self.k == 0:
@@ -187,8 +187,13 @@ class TerraconProgramEngine:
         task.root = self.root_task
         self.tasks.append(task)
 
-        logging.info("new task {} of class {}".format(name, task_class_type))
+        logging.info("new task {} of class {} at {}".format(name, task_class_type, self.current_time()))
         logging.info("tasks active: {}".format(len(self.tasks)))
+
+    def clear_tasks(self):
+        self.tasks.clear()
+        self.root_task = None
+        logging.info("task list is empty")
 
     def current_time(self):
         now = datetime.now()
@@ -198,11 +203,12 @@ class TerraconProgramEngine:
 class Worker:
     def __init__(self, use_gpio):
         self.use_gpio = use_gpio
+        self.gpio_ready = False
         self.should_stop = False
         self.do_program_thread = False
         self.stop_webserver = None
         self.web_server = WebServer(self)
-        self.main_light_intensity = 0
+        self.main_light_intensity = float()
         self.water_on = False
         self.fogger_pump_on = False
         self.program_engine = TerraconProgramEngine(self)
@@ -244,6 +250,10 @@ class Worker:
             if "script_mode" in general:
                 self.script_mode = general["script_mode"]
 
+        logging.info(">>> config")
+        logging.info("... script mode: {}".format(self.script_mode))
+        logging.info("<<< config")
+
         return True
 
     def write_config(self):
@@ -270,9 +280,25 @@ class Worker:
         logging.info('starting program thread function')
 
         self.do_program_thread = True
+        first_iteration = True
+        iterations_counter = 0
 
         while self.do_program_thread:
-            if self.script_mode_changed:
+            iterations_counter += 1
+
+            # проверяем выполнение всех необходимых условий:
+            ok = True
+            if self.use_gpio:
+                if not self.gpio_ready:
+                    ok = False
+            # если не все условия выполнены, пропускаем итерацию
+            if not ok:
+                time.sleep(0.1)
+                continue
+
+            if first_iteration:
+                logging.info("program thread: all conditions met at iter {}, work started".format(iterations_counter))
+            if self.script_mode_changed or first_iteration:
                 if self.script_mode == True:
                     logging.info('starting program {}'.format(self.active_program_name))
                     self.program_engine.load_program(module_name=self.active_program_name, dir_path='./programs')
@@ -290,61 +316,17 @@ class Worker:
                     if self.current_single_task.is_done:
                         self.current_single_task = None
 
+            first_iteration = False
             time.sleep(0.1)
 
         logging.info('program thread function finished')
 
         return 0
 
-    '''async def run_gpio(self):
-        logging.info('running gpio')
-
-        main_light_pin = 12     # GPIO12 - управление светом
-        watering_pump_pin = 16  # GPIO16 - управление помпой верхнего полива
-        fogger_pump_pin = 20    # GPIO20 - управление помпой туманогенератора
-
-        GPIO.setmode(GPIO.BCM)    # устанавливаем режим нумерации по назв. каналов
-        GPIO.setup(main_light_pin, GPIO.OUT)
-        GPIO.setup(watering_pump_pin, GPIO.OUT)
-        GPIO.setup(fogger_pump_pin, GPIO.OUT)
-
-        pwm = GPIO.PWM(main_light_pin, 20000)  # устанавливаем частоту ШИМ 20 кГц
-        GPIO.output(watering_pump_pin, GPIO.HIGH)  # помпа выключена
-        GPIO.output(fogger_pump_pin, GPIO.HIGH)  # помпа выключена
-
-        pwm.start(0)
-
-        while not self.should_stop:
-            # яркость основного освещения
-            pwm.ChangeDutyCycle(self.main_light_intensity)
-
-            # помпа верхнего полива
-            if self.water_on:
-                GPIO.output(watering_pump_pin, GPIO.LOW)  # включить помпу
-            else:
-                GPIO.output(watering_pump_pin, GPIO.HIGH)  # выключить помпу
-
-            # помпа туманогенератора
-            if self.fogger_pump_on:
-                GPIO.output(fogger_pump_pin, GPIO.LOW)  # включить помпу
-            else:
-                GPIO.output(fogger_pump_pin, GPIO.HIGH)  # выключить помпу
-
-            await asyncio.sleep(0.5)
-
-        pwm.stop()
-        GPIO.output(watering_pump_pin, GPIO.HIGH)  # выходя, выключаем помпу
-        GPIO.output(fogger_pump_pin, GPIO.HIGH)  # выходя, выключаем помпу
-
-        GPIO.cleanup()
-
-        logging.info('gpio finished')'''
-
     async def run_gpio(self):
-        logging.info('running gpio')
+        logging.info('running GPIO')
+        self.gpio_ready = False
 
-        min_light_freq = 0.0
-        max_light_freq = 20000.0
         min_light_duty_cycle = 0.0
         max_light_duty_cycle = 100.0
 
@@ -357,25 +339,27 @@ class Worker:
         GPIO.setup(watering_pump_pin, GPIO.OUT)
         GPIO.setup(fogger_pump_pin, GPIO.OUT)
 
-        pwm = GPIO.PWM(main_light_pin, 20000)  # устанавливаем частоту ШИМ 20 кГц
+        pwm = GPIO.PWM(main_light_pin, 470)  # это частота ШИМ на Raspberry! частота основного контроллера - 20 кГц
+        # (Этот вывод Raspberry служит для управления дискретным высокочастотным ШИМ-контроллером, который управляет
+        # яркостью светодиодных лент. Контроллеру на входе нужен уровень от 0 до 5 В, который и задает желаемую
+        # скважность ШИМ. Значение частоты управляющего ШИМ взято не круглым, чтобы оно не резонировало с 20 кГц
+        # и не создавало "алиасинг" в виде низкочастотных мерцаний при изменении яркости светодиодов.)
         GPIO.output(watering_pump_pin, GPIO.HIGH)  # помпа выключена
         GPIO.output(fogger_pump_pin, GPIO.HIGH)  # помпа выключена
 
         pwm.start(0)
 
+        self.gpio_ready = True
+        logging.info("GPIO ready")
+
         while not self.should_stop:
             # яркость основного освещения
-            light_freq = 20000
             light_duty_cycle = 0
             if self.main_light_intensity > 0:
-                light_freq = int(
-                    min_light_freq + (max_light_freq - min_light_freq) * (self.main_light_intensity / 100.0)
-                )
                 light_duty_cycle = int(
                     min_light_duty_cycle + (max_light_duty_cycle - min_light_duty_cycle) * (self.main_light_intensity / 100.0)
                 )
 
-            pwm.ChangeFrequency(light_freq)
             pwm.ChangeDutyCycle(light_duty_cycle)
 
             # помпа верхнего полива
@@ -398,7 +382,8 @@ class Worker:
 
         GPIO.cleanup()
 
-        logging.info('gpio finished')
+        logging.info('GPIO finished')
+        self.gpio_ready = False
 
     def run(self):
         logging.info('-> run')
@@ -553,6 +538,7 @@ class Worker:
 
     def set_script_mode(self):
         if self.script_mode == True:
+            logging.info("already in script mode")
             return  # уже в нужном режиме
         self.script_mode = True
         self.script_mode_changed = True
@@ -560,6 +546,7 @@ class Worker:
 
     def set_manual_mode(self):
         if self.script_mode == False:
+            logging.info("already in manual mode")
             return  # уже в нужном режиме
         self.script_mode = False
         self.script_mode_changed = True
