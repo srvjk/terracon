@@ -33,7 +33,7 @@ class LightingManager(Task):
     def __init__(self, name):
         super().__init__(name)
         logging.info('lighting manager init')
-        self.start_time = time.fromisoformat('07:00:00')
+        self.start_time = time.fromisoformat('09:00:00')
         self.end_time = time.fromisoformat('23:59:00')
 
     def step(self, engine: TerraconProgramEngine):
@@ -110,7 +110,7 @@ class WateringManager(Task):
         super().__init__(name)
         logging.info('watering manager init')
         self.watering_intervals = [
-            ('22:35:00', '22:35:30')
+            ('22:30:00', '22:30:45')
         ]
 
     def step(self, engine: TerraconProgramEngine):
