@@ -5,7 +5,7 @@ import time
 import signal
 import asyncio
 import websockets
-import xml.etree.ElementTree as etree
+#import xml.etree.ElementTree as etree
 import xml.dom.minidom as md
 import json
 from functools import partial
@@ -45,7 +45,7 @@ class WebServer:
         async for message in ws:
             self.worker.on_new_command(message)
 
-    async def ws_handler(self, ws: websockets.WebSocketServerProtocol, uri: str) -> None:
+    async def ws_handler(self, ws: websockets.WebSocketServerProtocol) -> None:
         await self.register(ws)
         try:
             await self.process_command(ws)
@@ -273,7 +273,7 @@ class Worker:
         logging.info('running webserver')
         loop = asyncio.get_running_loop()
         self.stop_webserver = loop.create_future()
-        async with websockets.serve(self.web_server.ws_handler, "", 8001):
+        async with websockets.serve(self.web_server.ws_handler, "192.168.0.195", 8001):
             await self.stop_webserver
 
     def program_thread_func(self):
@@ -416,18 +416,18 @@ class Worker:
         self.main_light_intensity = value
 
     def parse_command(self, text: str):
-        root = etree.fromstring(text)
+        #root = etree.fromstring(text)
+        root = json.loads(text)
 
         #print(root.tag, root.attrib)
 
-        if root.tag != "command":
-            return
-
-        opcode = root.attrib["opcode"]
+        opcode = root["opcode"]
         if not opcode:
             return
 
         match opcode:
+            case "hello":
+                self.on_command_hello(root)
             case "setLightIntensity":
                 self.on_command_set_light_intensity(root)
             case "waterOn":
@@ -456,6 +456,9 @@ class Worker:
                 self.on_command_do_sunset(root)
             case _:
                 pass
+
+    def on_command_hello(self, elem):
+        logging.info("hello from client")
 
     def on_command_set_light_intensity(self, elem):
         if self.script_mode:
@@ -610,8 +613,12 @@ def handler_ctrl_c(worker, signum, frame):
         worker.shutdown()
 
 def main():
-    logging.basicConfig(level=logging.INFO, filename='terracon.log', filemode='a',
-                        format="[%(asctime)s : %(levelname)s] %(message)s")
+    logToFile = False
+    loggingFormat = "[%(asctime)s : %(levelname)s] %(message)s"
+    if logToFile:
+        logging.basicConfig(level=logging.INFO, filename='terracon.log', filemode='a', format=loggingFormat)
+    else:
+        logging.basicConfig(level=logging.INFO, format=loggingFormat)
 
     logging.info("Program (re)started")
 
