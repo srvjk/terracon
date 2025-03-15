@@ -459,6 +459,9 @@ class Worker:
 
     def on_command_hello(self, elem):
         logging.info("hello from client")
+        cmd_text = self.make_command_hello_reply()
+        cur_loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
     def on_command_set_light_intensity(self, elem):
         if self.script_mode:
@@ -491,6 +494,9 @@ class Worker:
         cmd_text = self.make_command_server_status()
         cur_loop = asyncio.get_event_loop()
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
+
+    def make_command_hello_reply(self):
+        return json.dumps({'opcode': 'hello hello'})
 
     def make_command_report_online(self):
         dom = md.getDOMImplementation()
