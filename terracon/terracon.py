@@ -215,7 +215,7 @@ class Worker:
         self.program_future = None  # объект Future для сценария
         self.active_program_name = 'program_test1.py'  #'no-active-program'
         self.current_single_task: Task = None  # одиночн. задача, выполн. вне программы (напр., по команде с пульта)
-        self.script_mode = True
+        self.script_mode = False
         self.script_mode_changed = False
         self.config_file_path = 'config.json'
         self.program_thread = None
@@ -232,6 +232,7 @@ class Worker:
         return True
 
     def read_config(self):
+        logging.info("reading config from " + self.config_file_path)
         data = None
         try:
             with open(self.config_file_path, "r") as read_file:
@@ -428,6 +429,8 @@ class Worker:
         match opcode:
             case "hello":
                 self.on_command_hello(root)
+            case "login":
+                self.on_command_login(root)
             case "setLightIntensity":
                 self.on_command_set_light_intensity(root)
             case "waterOn":
@@ -462,6 +465,18 @@ class Worker:
         cmd_text = self.make_command_hello_reply()
         cur_loop = asyncio.get_event_loop()
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
+
+    def on_command_login(self, elem):
+        if 'userLogin' not in elem:
+            logging.error()
+            return
+        if 'authString' not in elem:
+            logging.error("invalid (empty) login command")
+            return
+        user_login = elem['userLogin']
+        auth_string = elem['authString']
+        logging.info(f"user login: {user_login}")
+        logging.info(f"login raw data: {auth_string}")
 
     def on_command_set_light_intensity(self, elem):
         if self.script_mode:
