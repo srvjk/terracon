@@ -14,6 +14,8 @@ import importlib
 import importlib.util
 import logging
 import threading
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 gpio_present = True
 
@@ -25,21 +27,23 @@ try:
     import RPi.GPIO as GPIO
 except ModuleNotFoundError:
     gpio_present = False
-    print("Error importing RPi.GPIO!")
+    logging.error("Error importing RPi.GPIO!")
 
 
 class WebServer:
     def __init__(self, worker):
         self.client = None
         self.worker = worker
+        self.private_key = None
+        self.init_cryptography()
 
     async def register(self, ws: websockets.WebSocketServerProtocol) -> None:
         self.client = ws
-        print("Client connected: {}".format(ws.remote_address))
+        logging.info("Client connected: {}".format(ws.remote_address))
 
     async def unregister(self, ws: websockets.WebSocketServerProtocol) -> None:
         self.client = None
-        print("Client disconnected: {}".format(ws.remote_address))
+        logging.info("Client disconnected: {}".format(ws.remote_address))
 
     async def process_command(self, ws: websockets.WebSocketServerProtocol):
         async for message in ws:
@@ -54,6 +58,19 @@ class WebServer:
 
     async def send_to_client(self, message: str) -> None:
         await self.client.send(message)
+
+    def init_cryptography(self):
+        try:
+            with open("keys/terraconprivkey.pem", "rb") as key_file:
+                logging.info("key file found")
+                data = key_file.read()
+                print(data)
+                self.private_key = serialization.load_pem_private_key(data, password=None)
+                logging.info("encryption key loaded")
+        except IOError as err:
+            logging.error("problem with encryption key file: " + str(err))
+        except ValueError as err:
+            logging.error("problem with encryption key: " + str(err))
 
 def short_class_name(class_type):
     return class_type.__name__
@@ -429,6 +446,8 @@ class Worker:
         match opcode:
             case "hello":
                 self.on_command_hello(root)
+            case "handshakeReq":
+                self.on_command_handshake_req(root)
             case "login":
                 self.on_command_login(root)
             case "setLightIntensity":
@@ -463,6 +482,15 @@ class Worker:
     def on_command_hello(self, elem):
         logging.info("hello from client")
         cmd_text = self.make_command_hello_reply()
+        cur_loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
+
+    def on_command_handshake_req(self, elem):
+        logging.info("handshake request from client")
+        cmd_text = self.make_command_handshake_ack()
+        if not cmd_text:
+            logging.warning("handshake request received, but reply was not generated, sending nothing to client")
+            return
         cur_loop = asyncio.get_event_loop()
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
@@ -512,6 +540,17 @@ class Worker:
 
     def make_command_hello_reply(self):
         return json.dumps({'opcode': 'hello hello'})
+
+    def make_command_handshake_ack(self):
+        if not self.web_server.private_key:
+            return None
+        public_key = self.web_server.private_key.public_key()
+        pem_string = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode('utf-8')
+
+        return json.dumps({'opcode': 'handshakeAck', 'key': pem_string})
 
     def make_command_report_online(self):
         dom = md.getDOMImplementation()
@@ -640,6 +679,7 @@ def main():
         logging.basicConfig(level=logging.INFO, filename='terracon.log', filemode='a', format=loggingFormat)
     else:
         logging.basicConfig(level=logging.INFO, format=loggingFormat)
+    logging.getLogger().setLevel(logging.INFO)
 
     logging.info("Program (re)started")
 
