@@ -1,9 +1,11 @@
 #!/usr/bin/python3
-
+import base64
 import threading
 import time
 import signal
+import argparse
 import asyncio
+from json import JSONDecodeError
 import websockets
 #import xml.etree.ElementTree as etree
 import xml.dom.minidom as md
@@ -14,8 +16,9 @@ import importlib
 import importlib.util
 import logging
 import threading
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+import hashlib
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
 
 gpio_present = True
 
@@ -28,6 +31,12 @@ try:
 except ModuleNotFoundError:
     gpio_present = False
     logging.error("Error importing RPi.GPIO!")
+
+
+def make_hash(data: str):
+    data_bytes = data.encode('utf-8')
+    hash = hashlib.sha256(data_bytes).hexdigest()
+    return hash
 
 
 class WebServer:
@@ -75,7 +84,9 @@ class WebServer:
 def short_class_name(class_type):
     return class_type.__name__
 
+
 class Task:
+    """ Абстрактное задание - базовый класс для всех конкретных заданий и пользовательских сессий """
     def __init__(self, name):
         self.name = name
         self.root = None
@@ -95,6 +106,16 @@ class Task:
 
     def finish(self):
         self.is_done = True
+
+
+class UserSession(Task):
+    """ Пользовательская сессия """
+    def __init__(self, name):
+        super().__init__(name)
+
+    def step(self, engine):
+        pass
+
 
 class DoSunrise(Task):
     def __init__(self, name):
@@ -120,6 +141,7 @@ class DoSunrise(Task):
             self.finish()
         engine.worker.main_light_intensity = self.light_intensity  #TODO переделать через apply()
 
+
 class DoSunset(Task):
     def __init__(self, name):
         super().__init__(name)
@@ -143,6 +165,7 @@ class DoSunset(Task):
             logging.info("Sunset: light at min, finishing")
             self.finish()
         engine.worker.main_light_intensity = self.light_intensity  #TODO переделать через apply()
+
 
 class TerraconProgramEngine:
     def __init__(self, worker):
@@ -217,6 +240,21 @@ class TerraconProgramEngine:
         return now.time()
 
 
+class User:
+    def __init__(self, login, password_hash):
+        self.login = login
+        self.full_name = ""
+        self.password_hash = password_hash
+
+    def toJSON(self):
+        return {"login": self.login, "password_hash": self.password_hash, "full_name": self.full_name}
+
+def custom_serializer(obj):
+    if hasattr(obj, 'toJSON')  and callable(obj.toJSON):
+        return obj.toJSON()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
 class Worker:
     def __init__(self, use_gpio):
         self.use_gpio = use_gpio
@@ -234,11 +272,17 @@ class Worker:
         self.current_single_task: Task = None  # одиночн. задача, выполн. вне программы (напр., по команде с пульта)
         self.script_mode = False
         self.script_mode_changed = False
-        self.config_file_path = 'config.json'
         self.program_thread = None
+        self.config_file_path = 'config.json'
         if not self.config_exists():
             self.write_config()
         self.read_config()
+        self.users_file_path = 'users'
+        self.users = dict()
+        if not self.users_file_exists():
+            self.write_users()
+        self.read_users()
+        self.user_sessions = dict()  # пользовательские сессии
 
     def config_exists(self):
         try:
@@ -283,6 +327,95 @@ class Worker:
             json.dump(data, write_file)
 
         logging.info("configuration saved")
+
+    def users_file_exists(self):
+        try:
+            open(self.users_file_path, "r")
+        except FileNotFoundError:
+            return False
+
+        return True
+
+    def read_users(self):
+        logging.info(f"reading users from '{self.users_file_path}'")
+        data = None
+        try:
+            with open(self.users_file_path, "r") as read_file:
+                data = json.load(read_file)
+        except FileNotFoundError:
+            logging.warning("Could not load user accounts: file not found")
+            return False
+        except JSONDecodeError as e:
+            logging.error(e.msg)
+
+        self.parse_users(data)
+
+        return True
+
+    def parse_users(self, data):
+        try:
+            for key, user in data['users'].items():
+                login = user['login']
+                fullname = user['full_name']
+                passwdhash = user['password_hash']
+
+                new_user = User(login, passwdhash)
+                new_user.full_name = fullname
+                self.users[login] = new_user
+        except KeyError as e:
+            logging.error(e)
+
+        return True
+
+    def write_users(self):
+        data = dict()
+        data["users"] = self.users
+
+        with open(self.users_file_path, "w") as write_file:
+            json.dump(data, write_file, default=custom_serializer)
+
+        logging.info("users saved to file")
+
+    def reset_admin_password(self, new_password: str):
+        if not new_password:
+            return
+
+        password_hash = make_hash(new_password)
+
+        admin = self.users.get('admin')
+        if not admin:
+            admin = User('admin', password_hash)
+        else:
+            admin.password_hash = password_hash
+        self.users['admin'] = admin
+
+    def check_user(self, login: str, auth_string: str) -> bool:
+        if not login:
+            logging.error(f"user login is empty")
+            return False
+        if not auth_string:
+            logging.error(f"authorization string is empty for user {login}")
+            return False
+        user = self.users.get(login)
+        if not user:
+            logging.error(f"user account not found: {login}")
+            return False
+        lst = auth_string.splitlines()
+        if (len(lst)) != 3:
+            logging.error(f"invalid authorization data for user {login}")
+            return False
+        passw_hash = lst[2]
+        if user.password_hash == passw_hash:
+            return True
+        return False
+
+    def start_user_session(self, login: str):
+        """ Начать новую сессию пользователя 'login', если она еще не существует """
+        session = self.user_sessions.get(login)
+        if not session:
+            session = UserSession(login)
+            self.user_sessions[login] = session
+            logging.info(f"new session for user '{login}'")
 
     def on_new_command(self, text):
         self.parse_command(text)
@@ -406,6 +539,8 @@ class Worker:
     def run(self):
         logging.info('-> run')
 
+        self.read_users()
+
         logging.info('starting program thread...')
         self.program_thread = threading.Thread(target=self.program_thread_func)
         self.program_thread.start()
@@ -433,49 +568,68 @@ class Worker:
             value = 100
         self.main_light_intensity = value
 
+    def decrypt(self, data):
+        data_bytes = base64.b64decode(data)
+        plaintext = self.web_server.private_key.decrypt(
+            data_bytes,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        return plaintext.decode('utf-8')
+
     def parse_command(self, text: str):
         #root = etree.fromstring(text)
         root = json.loads(text)
 
         #print(root.tag, root.attrib)
+        encrypted = root["encrypted"]
+        data = root["data"]
 
-        opcode = root["opcode"]
+        if encrypted:
+            data = self.decrypt(data)
+        data = json.loads(data)
+
+        opcode = data["opcode"]
         if not opcode:
             return
 
         match opcode:
             case "hello":
-                self.on_command_hello(root)
+                self.on_command_hello(data)
             case "handshakeReq":
-                self.on_command_handshake_req(root)
+                self.on_command_handshake_req(data)
             case "login":
-                self.on_command_login(root)
+                self.on_command_login(data)
             case "setLightIntensity":
-                self.on_command_set_light_intensity(root)
+                self.on_command_set_light_intensity(data)
             case "waterOn":
-                self.on_command_water_on(root)
+                self.on_command_water_on(data)
             case "waterOff":
-                self.on_command_water_off(root)
+                self.on_command_water_off(data)
             case "foggerPumpOn":
-                self.on_command_fogger_pump_on(root)
+                self.on_command_fogger_pump_on(data)
             case "foggerPumpOff":
-                self.on_command_fogger_pump_off(root)
+                self.on_command_fogger_pump_off(data)
             case "checkOnline":
-                self.on_command_check_online(root)
+                self.on_command_check_online(data)
             case "updateFromServer":
-                self.on_command_update_from_server(root)
+                self.on_command_update_from_server(data)
             case "serverShutdown":
-                self.on_command_server_shutdown(root)
+                self.on_command_server_shutdown(data)
             case "setScriptMode":
-                self.on_command_set_script_mode(root)
+                self.on_command_set_script_mode(data)
             case "setManualMode":
-                self.on_command_set_manual_mode(root)
+                self.on_command_set_manual_mode(data)
             case "getProgramList":
-                self.on_command_get_program_list(root)
+                self.on_command_get_program_list(data)
             case "doSunrise":
-                self.on_command_do_sunrise(root)
+                self.on_command_do_sunrise(data)
             case "doSunset":
-                self.on_command_do_sunset(root)
+                self.on_command_do_sunset(data)
             case _:
                 pass
 
@@ -505,6 +659,13 @@ class Worker:
         auth_string = elem['authString']
         logging.info(f"user login: {user_login}")
         logging.info(f"login raw data: {auth_string}")
+
+        is_ok = self.check_user(user_login, auth_string)
+        if is_ok:
+            logging.info(f"user authorization successful: {user_login}")
+            self.start_user_session(user_login)
+        else:
+            logging.error(f"user authorization FAILED: {user_login}")
 
     def on_command_set_light_intensity(self, elem):
         if self.script_mode:
@@ -672,7 +833,16 @@ def handler_ctrl_c(worker, signum, frame):
     if res == 'y' or res == 'Y':
         worker.shutdown()
 
+
 def main():
+    parser = argparse.ArgumentParser(description="TerraCon server")
+    parser.add_argument("-r", "--reset_admin", action='store_true',
+                        help="Reset admin password"
+                        )
+    parser.add_argument("-p", "--new_password", help="New password for admin")
+
+    args = parser.parse_args()
+
     logToFile = False
     loggingFormat = "[%(asctime)s : %(levelname)s] %(message)s"
     if logToFile:
@@ -684,6 +854,15 @@ def main():
     logging.info("Program (re)started")
 
     worker = Worker(gpio_present)
+
+    if args.reset_admin:
+        if args.new_password:
+            worker.reset_admin_password(args.new_password)
+            worker.write_users()
+            logging.info("Admin password has been chanded")
+        else:
+            logging.warning("Admin password change requested, but new password was not specified.")
+
     #signal.signal(signal.SIGINT, partial(handler_ctrl_c, worker))
     worker.run()
 

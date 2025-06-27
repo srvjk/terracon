@@ -21,6 +21,8 @@ __pycache__
 *.toml
 *.log
 config.json
+users
+
 
 
 
