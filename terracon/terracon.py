@@ -6,6 +6,8 @@ import signal
 import argparse
 import asyncio
 from json import JSONDecodeError
+from secrets import DEFAULT_ENTROPY
+
 import websockets
 #import xml.etree.ElementTree as etree
 import xml.dom.minidom as md
@@ -25,6 +27,9 @@ gpio_present = True
 version_major = 1
 version_minor = 0
 revision = 1
+
+''' Таймаут по умолчанию для пользовательских сессий, в секундах '''
+DEFAULT_USER_SESSION_TIMEOUT = 1 * 60.0
 
 try:
     import RPi.GPIO as GPIO
@@ -112,6 +117,23 @@ class UserSession(Task):
     """ Пользовательская сессия """
     def __init__(self, name):
         super().__init__(name)
+        self.timeout = DEFAULT_USER_SESSION_TIMEOUT
+        self.last_time_stamp = datetime.now()
+
+    def expired(self)->bool:
+        '''
+        Проверка, не истекла ли сессия.
+        Сессия считается истекшей, если пользователь не проявлял активности в течение заданного времени.
+        '''
+        idle_time = datetime.now() - self.last_time_stamp
+        idle_time_sec = idle_time.total_seconds()
+        if idle_time_sec >= self.timeout:
+            return True
+        return False
+
+    def refresh(self):
+        ''' Обнуление возраста сессии (например, если пришли данные от пользователя)'''
+        self.last_time_stamp = datetime.now()
 
     def step(self, engine):
         pass
@@ -260,6 +282,7 @@ class Worker:
         self.use_gpio = use_gpio
         self.gpio_ready = False
         self.should_stop = False
+        self.do_administration_thread = False
         self.do_program_thread = False
         self.stop_webserver = None
         self.web_server = WebServer(self)
@@ -272,6 +295,7 @@ class Worker:
         self.current_single_task: Task = None  # одиночн. задача, выполн. вне программы (напр., по команде с пульта)
         self.script_mode = False
         self.script_mode_changed = False
+        self.administration_thread = None
         self.program_thread = None
         self.config_file_path = 'config.json'
         if not self.config_exists():
@@ -416,6 +440,7 @@ class Worker:
             session = UserSession(login)
             self.user_sessions[login] = session
             logging.info(f"new session for user '{login}'")
+            logging.info(f"active user sessions: {len(self.user_sessions)}")
 
     def on_new_command(self, text):
         self.parse_command(text)
@@ -427,7 +452,25 @@ class Worker:
         async with websockets.serve(self.web_server.ws_handler, "192.168.0.195", 8001):
             await self.stop_webserver
 
+    def administration_thread_func(self):
+        ''' Управление пользовательскими сессиями и различные фоновые задачи '''
+        logging.info('starting administration thread function')
+
+        self.do_administration_thread = True
+
+        while self.do_administration_thread:
+            for user_login, user_session in list(self.user_sessions.items()):
+                if user_session.expired():
+                    logging.info(f'expired user session closed: {user_login}')
+                    del self.user_sessions[user_login]
+                    logging.info(f"active user sessions: {len(self.user_sessions)}")
+
+            time.sleep(0.5)
+
+        logging.info('administration thread function finished')
+
     def program_thread_func(self):
+        ''' Управление отдельными заданиями и рабочей программой '''
         logging.info('starting program thread function')
 
         self.do_program_thread = True
@@ -541,6 +584,11 @@ class Worker:
 
         self.read_users()
 
+        logging.info('starting administration thread...')
+        self.administration_thread = threading.Thread(target=self.administration_thread_func)
+        self.administration_thread.start()
+        logging.info('done')
+
         logging.info('starting program thread...')
         self.program_thread = threading.Thread(target=self.program_thread_func)
         self.program_thread.start()
@@ -558,6 +606,7 @@ class Worker:
         ioloop.close()
 
         self.program_thread.join()
+        self.administration_thread.join()
 
         logging.info('<- run')
 
@@ -597,6 +646,8 @@ class Worker:
         if not opcode:
             return
 
+        # команды, не требующие наличия активной пользовательской сессии:
+        stop_processing = True
         match opcode:
             case "hello":
                 self.on_command_hello(data)
@@ -604,6 +655,21 @@ class Worker:
                 self.on_command_handshake_req(data)
             case "login":
                 self.on_command_login(data)
+            case _:
+                stop_processing = False
+
+        if stop_processing:
+            return
+
+        user_session = self.user_sessions.get(user_login)
+        if user_session:
+            user_session.refresh()
+        else:
+            logging.error(f"user not authorized: {user_login}")
+            return
+
+        # команды, выполняемые только в активной пользовательской сессии:
+        match opcode:
             case "setLightIntensity":
                 self.on_command_set_light_intensity(data)
             case "waterOn":
@@ -756,6 +822,7 @@ class Worker:
 
     def shutdown(self):
         self.write_config()
+        self.do_administration_thread = False
         self.do_program_thread = False
         self.should_stop = True  # TODO сделать аккуратное завершение
         self.stop_webserver.set_result(True)
