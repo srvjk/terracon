@@ -53,11 +53,11 @@ class WebServer:
 
     async def register(self, ws: websockets.WebSocketServerProtocol) -> None:
         self.client = ws
-        logging.info("Client connected: {}".format(ws.remote_address))
+        logging.info("client connected: {}".format(ws.remote_address))
 
     async def unregister(self, ws: websockets.WebSocketServerProtocol) -> None:
         self.client = None
-        logging.info("Client disconnected: {}".format(ws.remote_address))
+        logging.info("client disconnected: {}".format(ws.remote_address))
 
     async def process_command(self, ws: websockets.WebSocketServerProtocol):
         async for message in ws:
@@ -452,6 +452,10 @@ class Worker:
         async with websockets.serve(self.web_server.ws_handler, "192.168.0.195", 8001):
             await self.stop_webserver
 
+    def reply_to_client(self, text):
+        cur_loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(text), cur_loop)
+
     def administration_thread_func(self):
         ''' Управление пользовательскими сессиями и различные фоновые задачи '''
         logging.info('starting administration thread function')
@@ -661,6 +665,10 @@ class Worker:
         if stop_processing:
             return
 
+        user_login = data['userLogin']
+        if not user_login:
+            return
+
         user_session = self.user_sessions.get(user_login)
         if user_session:
             user_session.refresh()
@@ -680,8 +688,8 @@ class Worker:
                 self.on_command_fogger_pump_on(data)
             case "foggerPumpOff":
                 self.on_command_fogger_pump_off(data)
-            case "checkOnline":
-                self.on_command_check_online(data)
+            case "keepAlive":
+                self.on_command_keep_alive(data)
             case "updateFromServer":
                 self.on_command_update_from_server(data)
             case "serverShutdown":
@@ -715,11 +723,18 @@ class Worker:
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
     def on_command_login(self, elem):
+        reply_text = self.make_command_login_reply(result=False, text="unknown error")
         if 'userLogin' not in elem:
-            logging.error()
+            descr = "invalid login command: username is empty"
+            logging.error(descr)
+            reply_text = self.make_command_login_reply(result=False, text=descr)
+            self.reply_to_client(reply_text)
             return
         if 'authString' not in elem:
-            logging.error("invalid (empty) login command")
+            descr = "invalid login command: password is empty"
+            logging.error(descr)
+            reply_text = self.make_command_login_reply(result=False, text=descr)
+            self.reply_to_client(reply_text)
             return
         user_login = elem['userLogin']
         auth_string = elem['authString']
@@ -728,10 +743,15 @@ class Worker:
 
         is_ok = self.check_user(user_login, auth_string)
         if is_ok:
-            logging.info(f"user authorization successful: {user_login}")
+            descr = f"user authorization successful: {user_login}"
+            logging.info(descr)
             self.start_user_session(user_login)
+            reply_text = self.make_command_login_reply(result=True, text=descr)
         else:
-            logging.error(f"user authorization FAILED: {user_login}")
+            descr = f"user authorization FAILED: {user_login}"
+            logging.error(descr)
+            reply_text = self.make_command_login_reply(result=False, text=descr)
+        self.reply_to_client(reply_text)
 
     def on_command_set_light_intensity(self, elem):
         if self.script_mode:
@@ -755,9 +775,11 @@ class Worker:
     def on_command_fogger_pump_off(self, elem):
         self.fogger_pump_on = False
 
-    def on_command_check_online(self, elem):
+    def on_command_keep_alive(self, elem):
+        logging.info("keep-alive от клиента")
         cmd_text = self.make_command_report_online()
         cur_loop = asyncio.get_event_loop()
+        logging.info("отправка keep-alive-response")
         asyncio.run_coroutine_threadsafe(self.web_server.send_to_client(cmd_text), cur_loop)
 
     def on_command_update_from_server(self, elem):
@@ -783,7 +805,7 @@ class Worker:
         dom = md.getDOMImplementation()
         doc = dom.createDocument(None, None, None)
         root = doc.createElement("command")
-        root.setAttribute("opcode", "reportOnline")
+        root.setAttribute("opcode", "keepAliveResponse")
         doc.appendChild(root)
 
         return doc.toxml()
@@ -819,6 +841,15 @@ class Worker:
         elem.appendChild(valElem)
 
         return doc.toxml()
+
+    def make_command_login_reply(self, result: bool, text: str):
+        return json.dumps(
+            {
+                'opcode': 'loginResponse',
+                'result': "ok" if result == True else "fail",
+                'text': text
+            }
+        )
 
     def shutdown(self):
         self.write_config()
